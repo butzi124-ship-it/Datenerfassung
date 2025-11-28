@@ -315,6 +315,7 @@ function performAdminLogin() {
     alert("Zugangsdaten falsch.");
 }
 
+
 function loginAsWorker(id) {
     const emp = appState.globalEmployees.find((x) => x.id === id);
     if (!emp) return;
@@ -2247,4 +2248,10 @@ async function finalizeOrderCompletionAfterTimes() {
     appState.activeOrderId = null;
     appState.currentView = "dashboard";
     renderView();
+}
+// Sicherstellen, dass bestimmte Funktionen im globalen Scope verfügbar sind
+if (typeof window !== "undefined") {
+    window.openAdminLogin = openAdminLogin;
+    window.closeAdminLogin = closeAdminLogin;
+    window.performAdminLogin = performAdminLogin;
 }

@@ -191,9 +191,7 @@
                     </div>
 
                     <div id="prodAdminControls" class="flex gap-3 flex-wrap">
-                        <!-- schöner blauer Button für MITARBEITER + -->
-                        <button type="button"
-                                onclick="openAddEmployeeDialog()"
+                        <button type="button" onclick="openAddEmployeeDialog()"
                                 class="bg-white text-brand border border-brand hover:bg-brandLight px-4 py-2 rounded font-bold text-xs tracking-wide btn-press">
                             MITARBEITER +
                         </button>
@@ -245,7 +243,7 @@
 
 <!-- Admin-Login -->
 <div id="adminLoginDialog"
-     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+     class="fixed inset-0 bg-black/40 z-[200] hidden items-center justify-center">
     <div class="bg-white rounded-xl shadow-soft max-w-sm w-full p-6 mx-3">
         <div class="flex justify-between items-center mb-4">
             <h3 class="text-lg font-black text-slate-800">Admin / Abt.-Leiter</h3>
@@ -513,7 +511,6 @@
     </div>
 </div>
 
-
 <!-- Spannungsname ändern -->
 <div id="nameDialog"
      class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
@@ -628,37 +625,6 @@
                     disabled
                     class="px-4 py-2 text-sm font-bold rounded bg-slate-300 text-white cursor-not-allowed">
                 ABSCHLIESSEN &amp; PDF
-            </button>
-        </div>
-    </div>
-</div>
-
-<!-- Mitarbeiter zum Auftrag hinzufügen -->
-<div id="addEmployeeDialog"
-     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
-    <div class="bg-white rounded-xl shadow-soft max-w-sm w-full p-6 mx-3">
-        <div class="flex justify-between items-center mb-4">
-            <h3 class="text-lg font-black text-slate-800">Mitarbeiter zum Auftrag hinzufügen</h3>
-            <button onclick="safeHide('addEmployeeDialog', true)"
-                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
-        </div>
-
-        <div class="mb-4">
-            <label class="block text-xs font-bold text-slate-500 mb-1">Mitarbeiter</label>
-            <select id="selectAdditionalEmployee"
-                    class="w-full border rounded px-3 py-2 text-sm">
-                <!-- wird von openAddEmployeeDialog() befüllt -->
-            </select>
-        </div>
-
-        <div class="flex justify-end gap-2 mt-4">
-            <button onclick="safeHide('addEmployeeDialog', true)"
-                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
-                Abbrechen
-            </button>
-            <button onclick="addEmployeeToOrder()"
-                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
-                Hinzufügen
             </button>
         </div>
     </div>
