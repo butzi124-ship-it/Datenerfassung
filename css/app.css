@@ -1,0 +1,43 @@
+html,
+body {
+    overscroll-behavior: none;
+}
+
+.btn-press {
+    transform: translateY(0);
+    transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+.btn-press:active {
+    transform: translateY(1px);
+    box-shadow: 0 4px 10px rgba(15, 23, 42, 0.15);
+}
+
+.scrollbar-thin::-webkit-scrollbar {
+    height: 6px;
+}
+
+.scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+.scrollbar-thin::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.7);
+    border-radius: 999px;
+}
+
+/* Karten */
+#stationGrid .station-card {
+    transition: transform 0.05s ease, box-shadow 0.05s ease;
+}
+
+#stationGrid .station-card:active {
+    transform: translateY(1px);
+    box-shadow: 0 6px 14px rgba(15, 23, 42, 0.12);
+}
+/* Häkchen in der QS-Checkliste deutlich anzeigen */
+#checklistContainer input[type="checkbox"] {
+    accent-color: #005baa; /* Humbel-Blau */
+    width: 1rem;
+    height: 1rem;
+}
