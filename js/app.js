@@ -36,6 +36,7 @@ const CHECKLIST_ITEMS = [
 let clockInterval = null;
 let qaDialogResolve = null;          // für Scrap/Abklärung-Mitarbeiterwahl
 let pendingFinishContext = null;     // für Abschluss + Zeitdialog
+let currentOpDialogOrderId = null;   // NEU
 
 // ==========================
 //   HILFSFUNKTIONEN
@@ -85,7 +86,7 @@ function loadData() {
             if (!Array.isArray(m.activeOrderIds)) m.activeOrderIds = [];
         });
 
-        appState.orders.forEach((o) => {
+                appState.orders.forEach((o) => {
             if (!Array.isArray(o.stations)) o.stations = [];
             if (!Array.isArray(o.employees)) o.employees = [];
             if (!Array.isArray(o.history)) o.history = [];
@@ -99,11 +100,21 @@ function loadData() {
                 if (typeof s.scrapTotal !== "number") s.scrapTotal = 0;
                 if (typeof s.clarifyTotal !== "number") s.clarifyTotal = 0;
 
+                // NEU: Lebensdauer-Ausschuss (für OFFEN-Berechnung)
+                if (typeof s.scrapLifetime !== "number") {
+                    // vorhandenen Ausschuss als Basis übernehmen
+                    s.scrapLifetime = s.scrapTotal || 0;
+                }
+
                 // Vorgabezeit-Infos pro Spannung
                 if (!s.timeStatus) s.timeStatus = null;              // "ok" | "changed" | null
                 if (typeof s.actualTimeMinutes !== "number") s.actualTimeMinutes = null;
+                
+                // NEU: OP-Nummer
+                if (typeof s.opNumber === "undefined") s.opNumber = null;
             });
         });
+
 
         const allowedViews = ["login", "dashboard", "production"];
         if (!allowedViews.includes(appState.currentView)) {
@@ -128,6 +139,60 @@ function startClock() {
     update();
     clockInterval = setInterval(update, 1000);
 }
+
+// OFFEN-Zähler oben rechts:
+// Zielmenge - (fertige Teile letzte Spannung + Ausschuss aller Spannungen)
+function recalculateOpenCounter() {
+    const headerEl = document.getElementById("grandTotal");
+    if (!headerEl) return;
+
+    const order = appState.orders.find(
+        (o) => o.id === appState.activeOrderId
+    );
+
+    if (!order) {
+        headerEl.textContent = "0";
+        return;
+    }
+
+    const target = Number(order.targetQuantity) || 0;
+    if (!target || target <= 0) {
+        // kein Ziel hinterlegt -> 0 OFFEN anzeigen
+        headerEl.textContent = "0";
+        return;
+    }
+
+    // 1) fertige Gutteile aus der LETZTEN Spannung
+    let finishedLast = 0;
+    if (order.stations && order.stations.length > 0) {
+        const lastId = order.stations.reduce(
+            (max, s) => (s.id > max ? s.id : max),
+            0
+        );
+        const lastStation = order.stations.find((s) => s.id === lastId);
+        if (lastStation && lastStation.counts) {
+            Object.values(lastStation.counts).forEach((v) => {
+                finishedLast += Number(v) || 0;
+            });
+        }
+    }
+
+    // 2) Ausschuss über ALLE Spannungen
+    let scrapAll = 0;
+    if (order.stations && Array.isArray(order.stations)) {
+        order.stations.forEach((s) => {
+            scrapAll += Number(s.scrapTotal) || 0;
+        });
+    }
+
+    // 3) OFFEN = Ziel - (fertig letzte Spannung + Ausschuss gesamt)
+    const remaining = target - (finishedLast + scrapAll);
+    headerEl.textContent =
+        remaining > 0
+            ? remaining.toLocaleString("de-DE")
+            : "0";
+}
+
 
 // Bild als DataURL laden (für PDF-Logo / BG)
 function loadImageAsDataUrl(src, alpha = 1) {
@@ -587,8 +652,8 @@ function showProductionScreen(machine) {
         if (dArt) dArt.textContent = order.articleNumber || "--";
 
         renderStations(order);
-        // wichtig: Zähler & Footer über zentrale Funktion
         refreshTotals(order);
+
     }
 }
 
@@ -651,28 +716,13 @@ function getHeaderDisplayTotal(order, producedTotal) {
     return remaining >= 0 ? remaining : 0;
 }
 
-/**
- * Aktualisiert die Anzeige oben rechts (Rest / Fertig)
- * und die Summen im Footer.
- */
-function refreshTotals(order) {
-    const grandEl = document.getElementById("grandTotal");
 
-    if (!order) {
-        if (grandEl) grandEl.textContent = "0";
-        renderFooterTotals(null, 0);
-        return;
-    }
-
-    const produced = computeGrandTotal(order);
-    const headerVal = getHeaderDisplayTotal(order, produced);
-
-    if (grandEl) {
-        grandEl.textContent = headerVal.toLocaleString("de-DE");
-    }
-
-    renderFooterTotals(order, produced);
+// Hilfsfunktion, damit alte Aufrufe weiter funktionieren
+function updateHeaderAndFooter(order) {
+    // kümmert sich um Header (OFFEN) + Footer-Gesamt
+    refreshTotals(order);
 }
+
 
 // HTML-Block für BA-Stückzahl + Differenz im Header
 function buildBaInfoHtml(order) {
@@ -885,6 +935,72 @@ function removeStation(stationId) {
     refreshTotals(order);
 }
 
+// Hilfsfunktion: benutzt für die Limits auf Basis "Stückzahl zu fertigen"
+function getTotalsForLimits(order) {
+    const target = Number(order.targetQuantity) || 0;
+    const perStation = {};
+    let globalUsed = 0;
+
+    if (!order || !order.stations) {
+        return { target, globalUsed: 0, perStation };
+    }
+
+    order.stations.forEach((s) => {
+        let good = 0;
+        if (s.counts) {
+            Object.values(s.counts).forEach((v) => {
+                good += Number(v) || 0;
+            });
+        }
+        const scrap = Number(s.scrapTotal) || 0;
+        const clarify = Number(s.clarifyTotal) || 0;
+
+        const used = good + scrap + clarify;
+        perStation[s.id] = { good, scrap, clarify, used };
+        globalUsed += used;
+    });
+
+    return { target, globalUsed, perStation };
+}
+
+// Liefert pro Spannung die Gesamtzahl der Gutteile (aktuelle Zähler + Historie)
+function computePerStationGood(order) {
+    const result = {};
+    if (!order || !Array.isArray(order.stations)) return result;
+
+    // Historie nach Station aufsummieren
+    const historyByStation = {};
+    if (Array.isArray(order.history)) {
+        order.history.forEach((h) => {
+            const sid = h.stationId;
+            const val = Number(h.count) || 0;
+            if (!historyByStation[sid]) historyByStation[sid] = 0;
+            historyByStation[sid] += val;
+        });
+    }
+
+    // Für jede Spannung: aktuelle Gut-Zähler + Historie
+    order.stations.forEach((s) => {
+        let good = 0;
+
+        if (s.counts) {
+            Object.values(s.counts).forEach((v) => {
+                good += Number(v) || 0;
+            });
+        }
+
+        if (historyByStation[s.id]) {
+            good += historyByStation[s.id];
+        }
+
+        result[s.id] = good;
+    });
+
+    return result;
+}
+
+
+
 function changeCount(stationId, empId, delta) {
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) return;
@@ -893,6 +1009,88 @@ function changeCount(stationId, empId, delta) {
 
     if (!station.counts) station.counts = {};
     const oldVal = Number(station.counts[empId]) || 0;
+
+    // Wenn nichts da ist und wir - drücken, einfach ignorieren
+    if (delta < 0 && oldVal <= 0) {
+        return;
+    }
+
+    // --------- Limits & Ketten-Logik ---------
+    const { target, globalUsed, perStation } = getTotalsForLimits(order);
+    const perStationGood = computePerStationGood(order);
+
+    const info = perStation[stationId] || { used: 0 };
+    const currentGood = perStationGood[stationId] || 0;
+    const idx = order.stations.findIndex((s) => s.id === stationId);
+
+    const inc = delta > 0 ? delta : 0;      // für Plus-Fälle
+    const deltaUsed = delta;                // used & good folgen hier dem delta
+
+    // 1) PLUS: nach vorne gekoppelt
+    if (inc > 0) {
+        // a) Verkettung: diese Spannung darf insgesamt (Gut + Ausschuss + Abklärung)
+        //    nicht mehr Teile haben als die VORIGE Spannung GUT hat.
+        if (idx > 0) {
+            const prevStation = order.stations[idx - 1];
+            const prevGood = perStationGood[prevStation.id] || 0;
+
+            if (info.used + inc > prevGood) {
+                alert(
+                    `In Spannung ${stationId} können nicht mehr Teile erfasst werden, ` +
+                    `als in Spannung ${prevStation.id} gut gemeldet wurden.`
+                );
+                return;
+            }
+        }
+
+        // b) Stückzahl-Limit (zu fertigende Menge insgesamt)
+        if (target > 0) {
+            // pro Spannung
+            if (info.used + inc > target) {
+                alert(
+                    "In dieser Spannung können nicht mehr Teile erfasst werden " +
+                    "als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+            // gesamt (alle Spannungen dieses Tages)
+            if (globalUsed + inc > target) {
+                alert(
+                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) " +
+                    "erfasst werden als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+        }
+    }
+
+    // 2) MINUS: nach hinten gekoppelt
+    if (deltaUsed < 0) {
+        // neue Gutmenge in dieser Spannung
+        const newGood = currentGood + delta; // delta ist negativ
+
+        if (idx < order.stations.length - 1) {
+            // höchste Nutzung in NACHFOLGENDEN Spannungen
+            let maxUsedAfter = 0;
+            for (let i = idx + 1; i < order.stations.length; i++) {
+                const sid = order.stations[i].id;
+                const inf = perStation[sid] || { used: 0 };
+                if (inf.used > maxUsedAfter) maxUsedAfter = inf.used;
+            }
+
+            // Nachfolgende Spannungen dürfen nicht mehr Teile haben als
+            // diese Spannung GUT hat
+            if (newGood < maxUsedAfter) {
+                alert(
+                    `In Spannung ${stationId} können aktuell keine Teile abgezogen werden, ` +
+                    `weil nachfolgende Spannungen bereits mehr Teile erfasst haben.`
+                );
+                return;
+            }
+        }
+    }
+    // --------- Ende Limit- & Ketten-Logik ---------
+
     let newVal = oldVal + delta;
     if (newVal < 0) newVal = 0;
     station.counts[empId] = newVal;
@@ -900,8 +1098,12 @@ function changeCount(stationId, empId, delta) {
     saveData(false);
 
     renderStations(order);
-    refreshTotals(order);
+    updateHeaderAndFooter(order);
 }
+
+
+
+
 
 // ==========================
 //   QA-Mitarbeiter-Dialog
@@ -993,10 +1195,10 @@ function pickEmployeeForQA(order, stationId, mode) {
     });
 }
 
+
 // ==========================
 //   AUSSCHUSS
 // ==========================
-
 async function changeScrap(stationId, delta) {
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) return;
@@ -1009,21 +1211,79 @@ async function changeScrap(stationId, delta) {
     if (!station.scrap) station.scrap = {};
     if (!station.scrapLog) station.scrapLog = [];
     if (typeof station.scrapTotal !== "number") station.scrapTotal = 0;
+    if (typeof station.scrapLifetime !== "number") {
+        station.scrapLifetime = station.scrapTotal || 0;
+    }
 
-    const newTotal = (station.scrapTotal || 0) + delta;
-    if (newTotal < 0) {
+    const oldEmpVal = station.scrap[emp.id] || 0;
+    const oldTotal = station.scrapTotal || 0;
+    const oldLifetime = station.scrapLifetime || 0;
+
+    // Bei Versuch, mehr abzuziehen als vorhanden
+    if (delta < 0 && (oldEmpVal <= 0 || oldTotal <= 0 || oldLifetime <= 0)) {
         alert("Negativer Ausschuss nicht möglich.");
         return;
     }
 
-    const newEmpVal = (station.scrap[emp.id] || 0) + delta;
-    if (newEmpVal < 0) {
-        alert("Negativer Ausschuss pro Mitarbeiter nicht möglich.");
+    // --------- Limits & Ketten-Logik ---------
+    const { target, globalUsed, perStation } = getTotalsForLimits(order);
+    const perStationGood = computePerStationGood(order);
+
+    const info = perStation[stationId] || { used: 0 };
+    const idx = order.stations.findIndex((s) => s.id === stationId);
+    const inc = delta > 0 ? delta : 0;      // für Plus-Fälle
+
+    // 1) PLUS: nach vorne gekoppelt (inkl. Ausschuss)
+    if (inc > 0) {
+        // a) Verkettung: diese Spannung (Gut + Ausschuss + Abklärung)
+        //    darf nicht mehr Teile haben als die VORIGE Spannung GUT hat.
+        if (idx > 0) {
+            const prevStation = order.stations[idx - 1];
+            const prevGood = perStationGood[prevStation.id] || 0;
+
+            if (info.used + inc > prevGood) {
+                alert(
+                    `In Spannung ${stationId} können nicht mehr Teile (inkl. Ausschuss) erfasst werden, ` +
+                    `als in Spannung ${prevStation.id} gut gemeldet wurden.`
+                );
+                return;
+            }
+        }
+
+        // b) Tages-Stückzahl-Limit
+        if (target > 0) {
+            if (info.used + inc > target) {
+                alert(
+                    "In dieser Spannung können nicht mehr Teile (inkl. Ausschuss) erfasst werden " +
+                    "als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+            if (globalUsed + inc > target) {
+                alert(
+                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden " +
+                    "als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+        }
+    }
+    // MINUS: hier keine Ketten-Prüfung nötig – wir korrigieren nur Ausschuss.
+
+    // --------- Ende Limit- & Ketten-Logik ---------
+
+    const newEmpVal = oldEmpVal + delta;
+    const newTotal = oldTotal + delta;
+    const newLifetime = oldLifetime + delta;
+
+    if (newEmpVal < 0 || newTotal < 0 || newLifetime < 0) {
+        alert("Negativer Ausschuss nicht möglich.");
         return;
     }
 
     station.scrap[emp.id] = newEmpVal;
-    station.scrapTotal = newTotal;
+    station.scrapTotal = newTotal;       // Tageswert
+    station.scrapLifetime = newLifetime; // Auftragswert
 
     station.scrapLog.push({
         empId: emp.id,
@@ -1033,13 +1293,16 @@ async function changeScrap(stationId, delta) {
 
     saveData(false);
     renderStations(order);
-    refreshTotals(order);
+    updateHeaderAndFooter(order); // OFFEN nutzt scrapLifetime
 }
+
+
+
+
 
 // ==========================
 //   IN ABKLÄRUNG
 // ==========================
-
 async function changeClarify(stationId, delta) {
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) return;
@@ -1049,9 +1312,52 @@ async function changeClarify(stationId, delta) {
     if (!station.clarify) station.clarify = {};
     if (!station.clarifyLog) station.clarifyLog = [];
     if (typeof station.clarifyTotal !== "number") station.clarifyTotal = 0;
+    if (typeof station.clarifyLifetime !== "number") {
+        station.clarifyLifetime = station.clarifyTotal || 0;
+    }
 
     const emp = await pickEmployeeForQA(order, stationId, "clarify");
     if (!emp) return;
+
+    // --------- Limits & Ketten-Logik (nur für +) ---------
+    const { target, globalUsed, perStation } = getTotalsForLimits(order);
+    const info = perStation[stationId] || { used: 0 };
+    const inc = delta > 0 ? delta : 0; // bei Abklärung ++ erhöht sich used
+    const idx = order.stations.findIndex((s) => s.id === stationId);
+
+    if (inc > 0) {
+        // Verkettung nach vorne
+        if (idx > 0) {
+            const prevStation = order.stations[idx - 1];
+            const prevInfo = perStation[prevStation.id] || { used: 0 };
+
+            if (info.used + inc > prevInfo.used) {
+                alert(
+                    `In Spannung ${stationId} können nicht mehr Teile (inkl. Abklärung) erfasst werden, ` +
+                    `als in Spannung ${prevStation.id} bearbeitet wurden.`
+                );
+                return;
+            }
+        }
+
+        if (target > 0) {
+            if (info.used + inc > target) {
+                alert(
+                    "In dieser Spannung können nicht mehr Teile (inkl. Abklärung) erfasst werden " +
+                    "als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+            if (globalUsed + inc > target) {
+                alert(
+                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden " +
+                    "als die zu fertigende Stückzahl."
+                );
+                return;
+            }
+        }
+    }
+    // --------- Ende Ketten-Logik ---------
 
     if (delta > 0) {
         if (
@@ -1061,8 +1367,10 @@ async function changeClarify(stationId, delta) {
         ) {
             return;
         }
+
         station.clarify[emp.id] = (station.clarify[emp.id] || 0) + 1;
         station.clarifyTotal += 1;
+        station.clarifyLifetime = (station.clarifyLifetime || 0) + 1;
 
         station.clarifyLog.push({
             empId: emp.id,
@@ -1081,6 +1389,10 @@ async function changeClarify(stationId, delta) {
 
             station.clarify[emp.id] -= 1;
             station.clarifyTotal -= 1;
+            station.clarifyLifetime = Math.max(
+                0,
+                (station.clarifyLifetime || 0) - 1
+            );
 
             station.clarifyLog.push({
                 empId: emp.id,
@@ -1100,12 +1412,22 @@ async function changeClarify(stationId, delta) {
 
     saveData(false);
     renderStations(order);
-    refreshTotals(order);
+    updateHeaderAndFooter(order);
 }
 
-// ==========================
-//   FOOTER-ZÄHLER
-// ==========================
+
+
+
+// Summe ALLER Ausschuss-Teile im Auftrag (über alle Spannungen, über alle Tage)
+function computeTotalScrap(order) {
+    if (!order || !Array.isArray(order.stations)) return 0;
+
+    return order.stations.reduce((sum, s) => {
+        const scrap = typeof s.scrapLifetime === "number" ? s.scrapLifetime : 0;
+        return sum + scrap;
+    }, 0);
+}
+
 
 function renderFooterTotals(order, grandTotalValue) {
     const container = document.getElementById("footerCounters");
@@ -1130,6 +1452,7 @@ function renderFooterTotals(order, grandTotalValue) {
     const perStationTotals = order.stations.map((s) => {
         let sum = 0;
 
+        // Gutteile: aktuelle Zähler + Historie
         if (s.counts) {
             Object.values(s.counts).forEach((v) => (sum += v || 0));
         }
@@ -1140,9 +1463,17 @@ function renderFooterTotals(order, grandTotalValue) {
             );
         }
 
-        const scrap = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
+        // Ausschuss / Abklärung unten sollen NICHT vom Tagesreset betroffen sein:
+        // -> wir nutzen die Lifetime-Werte, mit Fallback auf alte Felder.
+        const scrap =
+            typeof s.scrapLifetime === "number"
+                ? s.scrapLifetime
+                : (typeof s.scrapTotal === "number" ? s.scrapTotal : 0);
+
         const clarify =
-            typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0;
+            typeof s.clarifyLifetime === "number"
+                ? s.clarifyLifetime
+                : (typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0);
 
         return { id: s.id, total: sum, scrap, clarify };
     });
@@ -1176,6 +1507,153 @@ function renderFooterTotals(order, grandTotalValue) {
     html += "</div>";
     container.innerHTML = html;
 }
+
+
+// =====================================
+//  Restzähler oben rechts (OFFEN)
+//  – berücksichtigt Gutteile + Ausschuss
+// =====================================
+
+function refreshTotals(order) {
+    const grandEl = document.getElementById("grandTotal");
+
+    // Kein Auftrag -> alles auf 0
+    if (!order) {
+        if (grandEl) grandEl.textContent = "0";
+        renderFooterTotals(null, 0);
+        return;
+    }
+
+    // ======================================
+    // 1) Letzte Spannung ermitteln
+    // ======================================
+    let lastStation = null;
+    if (Array.isArray(order.stations) && order.stations.length > 0) {
+        lastStation = order.stations[order.stations.length - 1];
+    }
+
+    let goodTotal = 0; // fertige Gutteile (nur letzte Spannung)
+
+    if (lastStation) {
+        const lastId = lastStation.id;
+
+        // a) aktuelle Counts der letzten Spannung
+        if (lastStation.counts) {
+            Object.values(lastStation.counts).forEach((v) => {
+                goodTotal += Number(v) || 0;
+            });
+        }
+
+        // b) Historie für die letzte Spannung
+        if (Array.isArray(order.history)) {
+            order.history.forEach((h) => {
+                if (h.stationId === lastId) {
+                    goodTotal += Number(h.count) || 0;
+                }
+            });
+        }
+    }
+
+    // ======================================
+    // 2) Zielmenge bestimmen
+    // ======================================
+    const targetRaw = order.targetQuantity || order.baQuantity || 0;
+    const target = Number(targetRaw) || 0;
+
+    // ======================================
+    // 3) Bearbeitete Teile:
+    //    - GUTTEILE nur aus der letzten Spannung (inkl. Historie)
+    //    - AUSSCHUSS aus ALLEN Spannungen, über alle Tage (scrapLifetime)
+    // ======================================
+    const scrapAll = computeTotalScrap(order);  // nutzt jetzt scrapLifetime
+    const processed = goodTotal + scrapAll;
+
+    // ======================================
+    // 4) Wert für den Header (OFFEN / Rest)
+    // ======================================
+    let headerVal;
+    if (target > 0) {
+        const remaining = target - processed;
+        headerVal = remaining > 0 ? remaining : 0;
+    } else {
+        headerVal = processed;
+    }
+
+    if (grandEl) {
+        grandEl.textContent = headerVal.toLocaleString("de-DE");
+    }
+
+    // ======================================
+    // 5) Footer-Gesamt:
+    //     weiterhin NUR fertige Gutteile (letzte Spannung)
+    // ======================================
+    renderFooterTotals(order, goodTotal);
+}
+
+
+
+
+// ==========================
+//   AUFTRAG LÖSCHEN
+// ==========================
+
+function deleteOrder(orderId) {
+    if (!orderId) {
+        alert("Kein Auftrag ausgewählt.");
+        return;
+    }
+
+    const order = appState.orders.find(o => o.id === orderId);
+    if (!order) {
+        alert("Auftrag nicht gefunden.");
+        return;
+    }
+
+    const ba = order.baNumber || "-";
+
+    if (!confirm(`Auftrag BA ${ba} wirklich löschen? 
+Alle Zähler, Ausschussdaten und Protokolleinträge zu diesem Auftrag gehen dauerhaft verloren.`)) {
+        return;
+    }
+
+    // Auftrag aus Maschine entfernen
+    const machine = appState.machines.find(m => m.id === order.machineId);
+    if (machine && Array.isArray(machine.activeOrderIds)) {
+        machine.activeOrderIds = machine.activeOrderIds.filter(id => id !== orderId);
+    }
+
+    // Auftrag aus der globalen Liste entfernen
+    appState.orders = appState.orders.filter(o => o.id !== orderId);
+
+    // Falls dieser Auftrag aktiv war → View anpassen
+    if (appState.activeOrderId === orderId) {
+        appState.activeOrderId = null;
+
+        if (machine && machine.activeOrderIds.length > 0) {
+            // Es gibt noch andere Aufträge auf der Maschine → direkt auf den ersten springen
+            appState.activeOrderId = machine.activeOrderIds[0];
+            appState.activeMachineId = machine.id;
+            appState.currentView = "production";
+        } else {
+            // Keine Aufträge mehr → zurück zur Übersicht
+            appState.activeMachineId = null;
+            appState.currentView = "dashboard";
+        }
+    }
+
+    saveData();
+    renderView();
+}
+
+// Komfort-Funktion: aktuellen Auftrag löschen
+function deleteActiveOrder() {
+    if (!appState.activeOrderId) {
+        alert("Kein aktiver Auftrag zum Löschen ausgewählt.");
+        return;
+    }
+    deleteOrder(appState.activeOrderId);
+}
+
 
 // ==========================
 //   ORDERS & DIALOGE
@@ -1247,92 +1725,252 @@ function closeNewOrderDialog() {
 }
 
 function submitNewOrder() {
-    const mId = document.getElementById("inputMachineId").value.trim();
-    const ba = document.getElementById("inputBA").value.trim();
-    const art = document.getElementById("inputArt").value.trim();
+    try {
+        // sichere DOM-Element-Zugriffe (kann null sein)
+        const mInputEl = document.getElementById("inputMachineId");
+        const baEl = document.getElementById("inputBA");
+        const artEl = document.getElementById("inputArt");
+        const baQtyEl = document.getElementById("inputBaQty");
+        const targetQtyEl = document.getElementById("inputTargetQty");
+        const stationCountEl = document.getElementById("inputStationCount");
+        const selEmpEl = document.getElementById("selectInitialEmployee");
 
-    const baQtyStr = document.getElementById("inputBaQty").value.trim();
-    const targetQtyStr = document.getElementById("inputTargetQty").value.trim();
-    const baQty = parseInt(baQtyStr, 10) || 0;
-    const targetQty = parseInt(targetQtyStr, 10) || 0;
+        const mId = mInputEl ? mInputEl.value.trim() : "";
+        const ba = baEl ? baEl.value.trim() : "";
+        const art = artEl ? artEl.value.trim() : "";
+        const baQty = baQtyEl ? parseInt(baQtyEl.value.trim(), 10) || 0 : 0;
+        const targetQty = targetQtyEl ? parseInt(targetQtyEl.value.trim(), 10) || 0 : 0;
 
-    const cnt = parseInt(
-        document.getElementById("inputStationCount").value,
-        10
-    );
-    const empId = document
-        .getElementById("selectInitialEmployee")
-        .value.trim();
+        // station count kann als hidden input oder als data-count kommen
+        let cnt = 6;
+        if (stationCountEl && stationCountEl.value) {
+            cnt = parseInt(stationCountEl.value, 10) || 6;
+        } else {
+            // fallback: suche aktive button in stationCountButtons
+            const btnActive = document.querySelector("#stationCountButtons button.bg-brand");
+            if (btnActive && btnActive.dataset && btnActive.dataset.count) {
+                cnt = parseInt(btnActive.dataset.count, 10) || 6;
+            }
+        }
 
-    if (!mId || !ba || !art || !baQty || !targetQty || !empId) {
-        alert("Bitte Maschine, BA, Artikel, BA-Stückzahl, zu fertigende Stückzahl und Mitarbeiter angeben.");
+        // Mitarbeiter: tolerant aus select, falls nur text vorhanden -> suche passenden Mitarbeiter nach Namen
+        let empId = "";
+        if (selEmpEl) {
+            empId = selEmpEl.value || "";
+            if (!empId) {
+                // evtl. ist das select so gebaut dass value leer ist aber Text gesetzt -> versuchen anhand Text zu matchen
+                const selText = selEmpEl.options[selEmpEl.selectedIndex]
+                    ? selEmpEl.options[selEmpEl.selectedIndex].text
+                    : "";
+                if (selText) {
+                    const found = appState.globalEmployees.find((e) => e.name === selText);
+                    if (found) empId = found.id;
+                }
+            }
+        }
+
+        // Minimal-Validierung
+        if (!mId) {
+            alert("Bitte Maschine angeben.");
+            return;
+        }
+        if (!ba) {
+            alert("Bitte BA-Nummer angeben.");
+            return;
+        }
+        if (!art) {
+            alert("Bitte Artikel angeben.");
+            return;
+        }
+        if (!baQty || baQty <= 0) {
+            alert("Bitte gültige BA-Stückzahl angeben (> 0).");
+            return;
+        }
+        if (!targetQty || targetQty <= 0) {
+            alert("Bitte gültige Ziel-Stückzahl angeben (> 0).");
+            return;
+        }
+        if (!empId) {
+            // wenn currentUser ein Mitarbeiter ist, nutzen wir ihn als Fallback
+            if (appState.currentUser && appState.currentUser.role === "worker") {
+                empId = appState.currentUser.id;
+            } else {
+                alert("Bitte einen Mitarbeiter auswählen.");
+                return;
+            }
+        }
+
+        // Maschine anlegen, falls neu
+        let machine = appState.machines.find((m) => m.id === mId);
+        if (!machine) {
+            machine = {
+                id: mId,
+                deptId: (appState.currentUser && appState.currentUser.deptId) || "d1",
+                activeOrderIds: []
+            };
+            appState.machines.push(machine);
+        } else {
+            if (!Array.isArray(machine.activeOrderIds)) machine.activeOrderIds = [];
+        }
+
+        // Stations-Array erstellen (1..cnt)
+        const stations = [];
+        const countStations = isNaN(cnt) || cnt <= 0 ? 6 : cnt;
+        for (let i = 1; i <= countStations; i++) {
+            stations.push({
+                     id: i,
+                     name: `Spannung ${i}`,
+                       counts: {},
+                       scrap: {},
+                       scrapTotal: 0,
+                       scrapLifetime: 0,      // NEU
+                       scrapLog: [],
+                       clarify: {},
+                       clarifyTotal: 0,
+                       clarifyLifetime: 0,    // NEU
+                       clarifyLog: [],
+                       timeStatus: null,
+                       actualTimeMinutes: null,
+                       opNumber: null
+});
+
+        }
+
+        // initialer Mitarbeiter (global)
+        const gEmp = appState.globalEmployees.find((e) => e.id === empId) || null;
+
+        const order = {
+            id: "ord-" + Date.now(),
+            machineId: mId,
+            baNumber: ba,
+            articleNumber: art,
+            baQuantity: baQty,
+            targetQuantity: targetQty,
+            startTime: new Date().toISOString(),
+            stations,
+            employees: gEmp
+                ? [
+                      {
+                          id: gEmp.id,
+                          name: gEmp.name,
+                          persId: gEmp.persId
+                      }
+                  ]
+                : [],
+            history: [],
+            finishChecklist: {
+                items: []
+            }
+        };
+
+        // Push in State
+        appState.orders.push(order);
+        machine.activeOrderIds.push(order.id);
+
+        appState.activeMachineId = mId;
+        appState.activeOrderId = order.id;
+        appState.currentView = "production";
+
+        saveData();
+        closeNewOrderDialog();
+        renderView();
+
+        // Falls openOpDialog existiert, öffnen (wenn nicht, kein Fehler)
+        if (typeof openOpDialog === "function") {
+            try {
+                openOpDialog(order);
+            } catch (e) {
+                console.warn("openOpDialog failed:", e);
+            }
+        }
+    } catch (err) {
+        console.error("submitNewOrder error:", err);
+        alert("Fehler beim Starten des Auftrags. Konsole prüfen.");
+    }
+}
+
+
+function openOpDialog(order) {
+    if (!order) return;
+    currentOpDialogOrderId = order.id;
+
+    const dlg = document.getElementById("opDialog");
+    const body = document.getElementById("opDialogBody");
+    if (!dlg || !body) return;
+
+    body.innerHTML = "";
+
+    order.stations.forEach((s) => {
+        const val = s.opNumber || "";
+
+        body.innerHTML += `
+            <div class="flex items-center gap-3">
+                <div class="w-32 text-sm font-bold text-slate-700">
+                    Spannung ${s.id}
+                </div>
+                <div class="flex items-center gap-1 flex-1">
+                    <span class="text-xs font-mono text-slate-500">OP_</span>
+                    <input type="number"
+                           min="0"
+                           id="opInput_${s.id}"
+                           class="border rounded px-2 py-1 text-sm w-full"
+                           placeholder="z.B. 20"
+                           value="${val}">
+                </div>
+            </div>
+        `;
+    });
+
+    safeHide("opDialog", false);
+}
+
+function closeOpDialog() {
+    safeHide("opDialog", true);
+    currentOpDialogOrderId = null;
+}
+
+function saveOpDialog() {
+    if (!currentOpDialogOrderId) {
+        closeOpDialog();
         return;
     }
 
-    let machine = appState.machines.find((m) => m.id === mId);
-    if (!machine) {
-        machine = {
-            id: mId,
-            deptId: appState.currentUser.deptId || "d1",
-            activeOrderIds: []
-        };
-        appState.machines.push(machine);
+    const order = appState.orders.find(
+        (o) => o.id === currentOpDialogOrderId
+    );
+    if (!order) {
+        closeOpDialog();
+        return;
     }
 
-    const stations = [];
-    const countStations = isNaN(cnt) || cnt <= 0 ? 6 : cnt;
-    for (let i = 1; i <= countStations; i++) {
-        stations.push({
-            id: i,
-            name: `Spannung ${i}`,
-            counts: {},
-            scrap: {},
-            scrapTotal: 0,
-            scrapLog: [],
-            clarify: {},
-            clarifyTotal: 0,
-            clarifyLog: [],
-            timeStatus: null,
-            actualTimeMinutes: null
-        });
-    }
+    let allEmpty = true;
 
-    const gEmp = appState.globalEmployees.find((e) => e.id === empId);
-
-    const order = {
-        id: "ord-" + Date.now(),
-        machineId: mId,
-        baNumber: ba,
-        articleNumber: art,
-        baQuantity: baQty,          // Stückzahl BA
-        targetQuantity: targetQty,  // Stückzahl, die rückwärts zählen soll
-        startTime: new Date().toISOString(),
-        stations,
-        // Start-Mitarbeiter direkt im Auftrag hinterlegen
-        employees: gEmp
-            ? [{
-                id: gEmp.id,
-                name: gEmp.name,
-                persId: gEmp.persId || null
-            }]
-            : [],
-        history: [],
-        finishChecklist: {
-            items: []
+    order.stations.forEach((s) => {
+        const input = document.getElementById(`opInput_${s.id}`);
+        if (!input) return;
+        const raw = input.value.trim();
+        if (raw) {
+            s.opNumber = raw;
+            allEmpty = false;
+        } else {
+            s.opNumber = null;
         }
-    };
+    });
 
-    appState.orders.push(order);
-    machine.activeOrderIds.push(order.id);
-
-    appState.activeMachineId = mId;
-    appState.activeOrderId = order.id;
-    appState.currentView = "production";
+    if (allEmpty) {
+        if (
+            !confirm(
+                "Es wurden keine OP-Nummern eingetragen. Trotzdem fortfahren?"
+            )
+        ) {
+            return;
+        }
+    }
 
     saveData();
-    closeNewOrderDialog();
-    renderView();
+    closeOpDialog();
 }
+
 
 // Mitarbeiter-Dialog öffnen (Button "MITARBEITER +")
 function openAddEmployeeDialog() {
@@ -1441,19 +2079,22 @@ function addStationToOrder() {
         0
     );
     const nextId = maxId + 1;
-    order.stations.push({
-        id: nextId,
-        name: `Spannung ${nextId}`,
-        counts: {},
-        scrap: {},
-        scrapTotal: 0,
-        scrapLog: [],
-        clarify: {},
-        clarifyTotal: 0,
-        clarifyLog: [],
-        timeStatus: null,
-        actualTimeMinutes: null
-    });
+         order.stations.push({
+            id: nextId,
+            name: `Spannung ${nextId}`,
+            counts: {},
+            scrap: {},
+            scrapTotal: 0,
+            scrapLifetime: 0,      // NEU
+            scrapLog: [],
+            clarify: {},
+            clarifyTotal: 0,
+            clarifyLifetime: 0,    // NEU
+            clarifyLog: [],
+            timeStatus: null,
+            actualTimeMinutes: null
+});
+
     saveData();
     renderStations(order);
     refreshTotals(order);
@@ -1712,17 +2353,21 @@ function openProtocol() {
         if (!o.history) return;
         o.history.forEach((h) => {
             empty = false;
-            body.innerHTML += `
-                <tr class="border-b border-slate-100">
-                    <td class="py-3 text-xs font-mono">${new Date(
-                        h.date
-                    ).toLocaleDateString()}</td>
-                    <td class="font-bold text-slate-700">${o.baNumber}</td>
-                    <td class="text-slate-600">${h.empName}</td>
-                    <td class="text-slate-600">${h.stationName}</td>
-                    <td class="text-right font-black text-brand">${h.count}</td>
-                </tr>
-            `;
+            const opLabel = h.opNumber
+    ? `OP_${h.opNumber}`
+    : (h.stationName || `Spg ${h.stationId}`);
+
+body.innerHTML += `
+    <tr class="border-b border-slate-100">
+        <td class="py-3 text-xs font-mono">${new Date(
+            h.date
+        ).toLocaleDateString()}</td>
+        <td class="font-bold text-slate-700">${o.baNumber}</td>
+        <td class="text-slate-600">${h.empName}</td>
+        <td class="text-slate-600">${opLabel}</td>
+        <td class="text-right font-black text-brand">${h.count}</td>
+    </tr>
+`;
         });
     });
 
@@ -1754,8 +2399,10 @@ function performDayReset() {
         !confirm(
             "Tag abschließen? Zähler werden in die Historie geschrieben und auf 0 gesetzt."
         )
-    )
+    ) {
         return;
+    }
+
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) return;
 
@@ -1763,233 +2410,397 @@ function performDayReset() {
     const now = new Date().toISOString();
 
     order.stations.forEach((s) => {
+        // sicherstellen, dass Lifetime-Felder existieren
+        if (typeof s.scrapLifetime !== "number") {
+            s.scrapLifetime = s.scrapTotal || 0;
+        }
+        if (typeof s.clarifyLifetime !== "number") {
+            s.clarifyLifetime = s.clarifyTotal || 0;
+        }
+
+        // ================================
+        // 1) Gutteile in die Historie schreiben
+        // ================================
         if (s.counts) {
             Object.keys(s.counts).forEach((eid) => {
                 const val = s.counts[eid];
                 if (val > 0) {
-                    const emp = order.employees.find((e) => e.id === eid);
+                    const emp = order.employees
+                        ? order.employees.find((e) => e.id === eid)
+                        : null;
+
                     order.history.push({
                         date: now,
                         stationId: s.id,
                         stationName: s.name,
-                        empId: emp.id,
-                        empName: emp.name,
-                        persId: emp.persId,
+                        opNumber: s.opNumber || null,
+                        empId: emp ? emp.id : eid,
+                        empName: emp ? emp.name : "",
+                        persId: emp ? emp.persId : "",
                         count: val
                     });
+
+                    // Gut-Zähler für diesen Mitarbeiter auf 0 setzen
                     s.counts[eid] = 0;
                 }
             });
         }
+
+        // ================================
+        // 2) Ausschuss – NUR Tageszähler löschen
+        //    scrapLifetime bleibt unverändert!
+        // ================================
+        if (!s.scrap) s.scrap = {};
+        if (typeof s.scrapTotal !== "number") s.scrapTotal = 0;
+        if (!Array.isArray(s.scrapLog)) s.scrapLog = [];
+
+        Object.keys(s.scrap).forEach((empId) => {
+            s.scrap[empId] = 0;
+        });
+        s.scrapTotal = 0;  // Tageswert auf 0, Lifetime bleibt
+
+        // ================================
+        // 3) Abklärung – NUR Tageszähler löschen
+        //    clarifyLifetime bleibt unverändert!
+        // ================================
+        if (!s.clarify) s.clarify = {};
+        if (typeof s.clarifyTotal !== "number") s.clarifyTotal = 0;
+        if (!Array.isArray(s.clarifyLog)) s.clarifyLog = [];
+
+        Object.keys(s.clarify).forEach((empId) => {
+            s.clarify[empId] = 0;
+        });
+        s.clarifyTotal = 0;  // Tageswert auf 0
     });
+
     saveData();
     renderStations(order);
     refreshTotals(order);
 }
 
+
+
 // ==========================
-//   PDF-EXPORT
+//   PDF-EXPORT – STÜCKZAHL REPORT (aktualisiert: letzter SP für Gesamt, SP-Ausschuss sichtbar)
 // ==========================
-// isFinal = false  -> Button "EXPORT PDF" (nur Stand)
-// isFinal = true   -> Abschluss-PDF (Abgeschlossen am:, Dateiname _f, Abmelder grün)
 
 async function exportPdf(isFinal = false, finisherEmpId = null) {
+    const { jsPDF } = window.jspdf || {};
+    if (!jsPDF) {
+        alert("jsPDF konnte nicht geladen werden.");
+        return;
+    }
+
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) {
         alert("Kein aktiver Auftrag ausgewählt.");
         return;
     }
 
-    const machine = appState.machines.find((m) => m.id === order.machineId) || null;
+    const machine = appState.machines.find((m) => m.id === order.machineId);
 
-    // jsPDF holen (UMD-Variante wie im Script-Tag eingebunden)
-    const jsPdfNamespace = window.jspdf || window.jsPDF || null;
-    const jsPDF = jsPdfNamespace && jsPdfNamespace.jsPDF
-        ? jsPdfNamespace.jsPDF
-        : window.jsPDF || null;
+    const [logo, bg] = await Promise.all([loadPdfLogo(), loadPdfBackground()]);
 
-    if (!jsPDF) {
-        alert("jsPDF-Bibliothek nicht gefunden.");
+    const doc = new jsPDF({ unit: "pt", format: "a4" });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const pageHeight = doc.internal.pageSize.getHeight();
+    const marginLeft = 40;
+    const right = pageWidth - marginLeft;
+
+    // =======================
+    // HINTERGRUND-LOGO (Wasserzeichen)
+    // =======================
+    if (bg && bg.dataUrl) {
+        const maxBgHeight = pageHeight - 140;
+        const scale = maxBgHeight / bg.height;
+        const bgH = bg.height * scale;
+        const bgW = bg.width * scale;
+        const bgX = (pageWidth - bgW) / 2;
+        const bgY = 70;
+        doc.addImage(bg.dataUrl, "PNG", bgX, bgY, bgW, bgH, undefined, "FAST");
+    }
+
+    // =======================
+    // HEADER
+    // =======================
+    let y = 40;
+
+    // Logo links
+    if (logo && logo.dataUrl) {
+        const w = 110;
+        const h = (logo.height / logo.width) * w;
+        doc.addImage(logo.dataUrl, "PNG", marginLeft, y - 20, w, h, undefined, "FAST");
+    }
+
+    // Rechts oben: Datum, BA (farbig), Artikel
+    const finishedAtStr = new Date().toLocaleString("de-DE");
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(9);
+    doc.setTextColor(0, 0, 0);
+
+    const dateLabel = isFinal ? "Abgeschlossen am: " : "Datum: ";
+    const dateText = dateLabel + finishedAtStr;
+    let headerY = y;
+
+    // Datum
+    doc.text(dateText, right, headerY, { align: "right" });
+    headerY += 12;
+
+    // BA farblich hinterlegt (Export = orange, Abschluss = grün)
+    const baText = `BA: ${order.baNumber || "-"}`;
+    const baTextWidth = doc.getTextWidth(baText);
+    const baPadding = 4;
+    const baRectWidth = baTextWidth + baPadding * 2;
+    const baRectHeight = 12;
+    const baRectX = right - baRectWidth;
+    const baRectY = headerY - 8;
+
+    if (isFinal) doc.setFillColor(0, 140, 0);
+    else doc.setFillColor(255, 165, 0);
+
+    doc.rect(baRectX, baRectY, baRectWidth, baRectHeight, "F");
+    doc.setTextColor(255, 255, 255);
+    doc.text(baText, right - baPadding, headerY, { align: "right" });
+    doc.setTextColor(0, 0, 0);
+
+    headerY += 12;
+    doc.text(`Artikel: ${order.articleNumber || "-"}`, right, headerY, {
+        align: "right"
+    });
+
+    // Links: Abgemeldet von … (nur Abschluss)
+    if (isFinal && finisherEmpId) {
+        const finisher =
+            appState.globalEmployees.find((e) => e.id === finisherEmpId) ||
+            (order.employees || []).find((e) => e.id === finisherEmpId) ||
+            null;
+
+        if (finisher) {
+            const line = `Abgemeldet von: ${finisher.name}${
+                finisher.persId ? " (PersNr " + finisher.persId + ")" : ""
+            }`;
+            doc.text(line, marginLeft, y + 20);
+        }
+    }
+
+    // Titel – weiter oben
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(16);
+    doc.text("Stückzahl Report", pageWidth / 2, y + 18, { align: "center" });
+
+    // Linie unter Titel
+    doc.setLineWidth(1.0);
+    doc.line(marginLeft, y + 32, pageWidth - marginLeft, y + 32);
+
+    // Abstand zur Tabelle
+    y = y + 62;
+
+    // =====================
+    // TABELLE – pro Mitarbeiter / Station
+    // =====================
+    const employees = order.employees || [];
+    const stations = order.stations || [];
+    const stationCount = stations.length;
+
+    if (employees.length === 0 || stationCount === 0) {
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(10);
+        doc.text(
+            "Keine Daten vorhanden (keine Mitarbeiter oder Spannungen).",
+            marginLeft,
+            y
+        );
+        doc.save(
+            `Stueckzahl_Report_BA_${order.baNumber || "unbekannt"}${
+                isFinal ? "_final" : ""
+            }.pdf`
+        );
         return;
     }
 
-    const doc = new jsPDF("p", "mm", "a4");
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const pageHeight = doc.internal.pageSize.getHeight();
+    const colName = marginLeft;
+    const colPers = colName + 140;
+    const colSpWidth = 40;
+    const totalSpWidth = stationCount * colSpWidth;
+    const colSpStart = right - totalSpWidth;
 
-    // Optional: Logo oben links
-    try {
-        const logo = await loadPdfLogo();
-        if (logo && logo.dataUrl) {
-            const logoWidth = 35;
-            const logoHeight = (logo.height / logo.width) * logoWidth;
-            doc.addImage(logo.dataUrl, "PNG", 10, 10, logoWidth, logoHeight);
-        }
-    } catch (e) {
-        console.warn("Logo konnte nicht in PDF geladen werden:", e);
-    }
-
-    // Kopfzeile
+    // Tabellenkopf
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(14);
-    doc.text(
-        "Datenerfassung – Auftragsübersicht",
-        pageWidth / 2,
-        15,
-        { align: "center" }
-    );
-
     doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
 
-    const now = new Date();
-    const fmtDate = now.toLocaleDateString("de-DE");
-    const fmtTime = now.toLocaleTimeString("de-DE", {
-        hour: "2-digit",
-        minute: "2-digit"
-    });
+    const headerY2 = y;
+    doc.text("Name", colName, headerY2);
+    doc.text("PersNr", colPers, headerY2);
 
-    let y = 30;
-
-    const addLine = (label, value) => {
-        doc.setFont("helvetica", "bold");
-        doc.text(label + ":", 10, y);
-        doc.setFont("helvetica", "normal");
-        doc.text(String(value ?? "-"), 45, y);
-        y += 6;
-    };
-
-    addLine("Datum", `${fmtDate} ${fmtTime}`);
-    addLine("BA-Nummer", order.baNumber || "-");
-    addLine("Artikel", order.articleNumber || "-");
-    addLine("Maschine", machine ? machine.id : "-");
-    addLine("BA-Stückzahl", order.baQuantity || "-");
-    addLine("Stückzahl zu fertigen", order.targetQuantity || "-");
-
-    // Mitarbeiter im Auftrag
-    y += 4;
-    doc.setFont("helvetica", "bold");
-    doc.text("Mitarbeiter im Auftrag:", 10, y);
-    y += 6;
-    doc.setFont("helvetica", "normal");
-
-    if (order.employees && order.employees.length > 0) {
-        order.employees.forEach((e) => {
-            const line = e.persId ? `${e.name} (${e.persId})` : e.name;
-            doc.text("- " + line, 14, y);
-            y += 5;
-        });
-    } else {
-        doc.text("- keine hinterlegt -", 14, y);
-        y += 5;
+    for (let i = 0; i < stationCount; i++) {
+        const cx = colSpStart + colSpWidth * i + colSpWidth / 2;
+        doc.text(`SP${i + 1}`, cx, headerY2, { align: "center" });
     }
 
-    y += 4;
+    doc.setLineWidth(0.6);
+    doc.line(marginLeft, headerY2 + 4, right, headerY2 + 4);
 
-    // Tabelle: Spannungen
-    doc.setFont("helvetica", "bold");
-    doc.text("Spannungen:", 10, y);
-    y += 6;
-
-    const headerY = y;
-    doc.rect(10, headerY - 4, pageWidth - 20, 8);
-    doc.text("Spg.", 12, headerY);
-    doc.text("Gut", 30, headerY);
-    doc.text("Ausschuss", 55, headerY);
-    doc.text("Abklärung", 85, headerY);
-    doc.text("Zeit-Status", 120, headerY);
-    doc.text("Ist-Zeit (min)", 155, headerY);
-
-    y = headerY + 8;
+    y = headerY2 + 18;
     doc.setFont("helvetica", "normal");
+    doc.setFontSize(10);
 
-    const computeStationTotals = (s) => {
-        let good = 0;
-        if (s.counts) {
-            Object.values(s.counts).forEach((v) => {
-                good += Number(v) || 0;
+    function getGoodForEmpStation(empId, stationId) {
+        let sum = 0;
+        const s = stations.find((st) => st.id === stationId);
+        if (!s) return 0;
+
+        if (s.counts && typeof s.counts[empId] === "number") {
+            sum += s.counts[empId];
+        }
+
+        if (order.history && Array.isArray(order.history)) {
+            order.history.forEach((h) => {
+                if (h.empId === empId && h.stationId === stationId) {
+                    sum += h.count || 0;
+                }
             });
         }
-        const scrap = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
-        const clar = typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0;
-        return { good, scrap, clar };
-    };
+        return sum;
+    }
 
-    order.stations.forEach((s) => {
-        const { good, scrap, clar } = computeStationTotals(s);
+    // Wir berechnen:
+    // - lastStationGoodTotals: Summe GUT für die letzte Spannung (für "Gesamt"-Anzeige)
+    // - grandScrapTotal: Summe Ausschuss über alle Spannungen (wie vorher)
+    let lastStationIndex = stationCount - 1;
+    let lastStationId = stations[lastStationIndex].id;
+    let lastStationGoodTotals = 0;
+    let grandScrapTotal = 0;
 
-        if (y > pageHeight - 20) {
-            doc.addPage();
-            y = 20;
-        }
+    // Zeilen pro Mitarbeiter; beim Drucken pro SP zeigen wir auch Ausschuss (pro SP)
+    employees.forEach((emp) => {
+        const rowY = y;
+        doc.text(emp.name || "-", colName, rowY);
+        doc.text(emp.persId ? String(emp.persId) : "-", colPers, rowY);
 
-        doc.text(String(s.id), 12, y);
-        doc.text(String(good), 30, y);
-        doc.text(String(scrap), 55, y);
-        doc.text(String(clar), 85, y);
+        stations.forEach((s, idx) => {
+            const val = getGoodForEmpStation(emp.id, s.id);
 
-        const status =
-            s.timeStatus === "changed"
-                ? "geändert"
-                : s.timeStatus === "ok"
-                    ? "i.O."
-                    : "-";
+            // Nur die GUT-Werte der letzten Spannung gehen in lastStationGoodTotals
+            if (s.id === lastStationId) {
+                lastStationGoodTotals += val;
+            }
 
-        doc.text(status, 120, y);
+            const cx = colSpStart + colSpWidth * idx + colSpWidth / 2;
+            doc.text(String(val), cx, rowY, { align: "center" });
 
-        const mins =
-            typeof s.actualTimeMinutes === "number"
-                ? s.actualTimeMinutes
-                : "";
-        doc.text(mins === "" ? "-" : String(mins), 165, y, { align: "right" });
+            // Wenn auf dieser Spannung Ausschuss existiert, daneben/unterhalb klein anzeigen.
+            const scrapForStation = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
+            if (scrapForStation > 0) {
+                // kleine rote Zahl unter dem Gut-Wert
+                doc.setFontSize(8);
+                doc.setTextColor(200, 0, 0);
+                // leicht nach unten (rowY + 8) und rechts ein wenig (cx + 6)
+                doc.text(String(scrapForStation), cx + 6, rowY + 8, { align: "left" });
+                doc.setFontSize(10);
+                doc.setTextColor(0, 0, 0);
+            }
+        });
 
-        y += 6;
+        y += 16;
     });
 
-    // Gesamt unten
-    y += 4;
-    const totalFinished =
-        typeof computeGrandTotal === "function"
-            ? computeGrandTotal(order)
-            : 0;
+    // Gesamtausschuss aller Spannungen (wie gewünscht)
+    stations.forEach((s) => {
+        const scrap = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
+        grandScrapTotal += scrap;
+    });
+
+    // ===========================
+    // Gesamtsumme (rechts bündig) -> verwendet lastStationGoodTotals
+    // ===========================
+    y += 8;
 
     doc.setFont("helvetica", "bold");
-    doc.text("Gesamt gefertigte Teile: " + totalFinished, 10, y);
+    doc.setFontSize(11);
 
-    if (order.targetQuantity && order.targetQuantity > 0) {
-        const rest = Math.max(order.targetQuantity - totalFinished, 0);
-        y += 6;
-        doc.text("Restmenge (gegen Ziel): " + rest, 10, y);
+    const label = "Gesamt";
+    const labelWidth = doc.getTextWidth(label);
+    const goodStr = String(lastStationGoodTotals); // nur letzte Spannung
+    const goodWidth = doc.getTextWidth(goodStr);
+    const scrapStr = grandScrapTotal > 0 ? String(grandScrapTotal) : "";
+    const scrapWidth = scrapStr ? doc.getTextWidth(scrapStr) : 0;
+
+    const spacingLabelToGood = 12;
+    const spacingGoodToScrap = scrapStr ? 8 : 0;
+
+    const scrapX = right - scrapWidth;
+    const goodX = scrapX - spacingGoodToScrap - goodWidth;
+    const labelX = goodX - spacingLabelToGood - labelWidth;
+
+    // Linie nur unter dem Block
+    doc.setLineWidth(0.6);
+    doc.line(labelX, y, right, y);
+
+    y += 14;
+
+    doc.text(label, labelX, y);
+    doc.text(goodStr, goodX, y);
+
+    if (scrapStr) {
+        doc.setTextColor(200, 0, 0);
+        doc.setFontSize(9);
+        doc.text(scrapStr, scrapX, y);
+        doc.setTextColor(0, 0, 0);
+        doc.setFontSize(11);
     }
 
-    // Abschlussinfos bei finalem PDF
-    if (isFinal) {
-        y += 10;
-        doc.setFont("helvetica", "bold");
-        doc.text("Auftrag abgeschlossen", 10, y);
-        y += 6;
-        doc.setFont("helvetica", "normal");
-
-        if (finisherEmpId) {
-            const finisherEmp =
-                appState.globalEmployees.find((e) => e.id === finisherEmpId) ||
-                (order.employees || []).find((e) => e.id === finisherEmpId) ||
-                null;
-
-            const name = finisherEmp ? finisherEmp.name : "unbekannt";
-            doc.text("Abgemeldet von: " + name, 10, y);
-            y += 6;
+    // ===========================
+    //  TRENNSTRICH + ABWEICHUNGEN
+    // ===========================
+    const deviations = [];
+    stations.forEach((s) => {
+        if (s.timeStatus === "changed" && typeof s.actualTimeMinutes === "number") {
+            const opPart = s.opNumber ? ` (OP_${s.opNumber})` : "";
+            deviations.push(
+                `Vorgabezeit Spannung ${s.id}${opPart} nicht i.O. – Ist-Zeit ${s.actualTimeMinutes} min`
+            );
         }
+    });
+
+    const footerBaseY = pageHeight - 40;
+
+    // Trennstrich über der Fusszeile (immer)
+    doc.setLineWidth(0.6);
+    doc.line(marginLeft, footerBaseY - 10, right, footerBaseY - 10);
+
+    if (deviations.length > 0) {
+        let fy = footerBaseY;
+
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(9);
+        doc.setTextColor(200, 0, 0);
+        doc.text("Abweichungen:", marginLeft, fy);
+        fy += 14;
+
+        doc.setFont("helvetica", "normal");
+        deviations.forEach((line) => {
+            const wrapped = doc.splitTextToSize(`• ${line}`, pageWidth - marginLeft * 2);
+            wrapped.forEach((wLine) => {
+                doc.text(wLine, marginLeft, fy);
+                fy += 12;
+            });
+        });
+
+        doc.setTextColor(0, 0, 0);
     }
 
-    // Dateiname
-    const machId = machine ? machine.id : "X";
-    const ba = order.baNumber || "ohneBA";
-    const suffix = isFinal ? "_f" : "";
-    const fileName = `BA_${ba}_M${machId}${suffix}.pdf`;
-
-    doc.save(fileName);
+    const filename = `Stueckzahl_Report_BA_${order.baNumber || "unbekannt"}${
+        isFinal ? "_final" : ""
+    }.pdf`;
+    doc.save(filename);
 }
+
+
+
+
+
+
+
 
 // Export aus Footer-Button (nur Stand, kein Abschluss)
 function exportPdfFromButton() {
@@ -2254,4 +3065,8 @@ if (typeof window !== "undefined") {
     window.openAdminLogin = openAdminLogin;
     window.closeAdminLogin = closeAdminLogin;
     window.performAdminLogin = performAdminLogin;
+
+    // NEU: Auftrags-Löschfunktionen
+    window.deleteOrder = deleteOrder;
+    window.deleteActiveOrder = deleteActiveOrder;
 }

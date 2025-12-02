@@ -107,7 +107,7 @@
                 <p class="text-xs font-mono text-slate-500 font-bold" id="clock">--:--</p>
                 <div id="totalDisplay" class="hidden mt-1">
                     <p class="text-[10px] text-slate-500 uppercase tracking-wider font-bold leading-none mb-0.5">
-                        Fertig
+                        OFFEN
                     </p>
                     <p class="text-2xl font-black text-brand leading-none" id="grandTotal">0</p>
                 </div>
@@ -208,6 +208,11 @@
                                 class="bg-red-600 hover:bg-red-700 text-white border border-red-600 px-5 py-2 rounded font-bold text-xs tracking-wide shadow-sm btn-press">
                             ABSCHLIESSEN
                         </button>
+                        <button onclick="deleteActiveOrder()"
+                                class="bg-red-600 hover:bg-red-700 text-white border border-red-600 px-5 py-2 rounded font-bold text-xs tracking-wide shadow-sm btn-press">
+                            BA Löschen
+                        </button>
+
                     </div>
                 </div>
             </div>
@@ -510,6 +515,33 @@
         </div>
     </div>
 </div>
+<!-- Operationen je Spannung -->
+<div id="opDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-md w-full p-6 mx-3">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">Operationen je Spannung</h3>
+            <button onclick="closeOpDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div id="opDialogBody" class="space-y-3 max-h-[60vh] overflow-y-auto">
+            <!-- wird per JS aufgebaut -->
+        </div>
+
+        <div class="flex justify-end gap-2 mt-4">
+            <button onclick="closeOpDialog()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button onclick="saveOpDialog()"
+                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
+                Speichern
+            </button>
+        </div>
+    </div>
+</div>
+
 
 <!-- Spannungsname ändern -->
 <div id="nameDialog"
@@ -591,7 +623,7 @@
                     <th class="text-left py-2">Datum</th>
                     <th class="text-left py-2">BA</th>
                     <th class="text-left py-2">Mitarbeiter</th>
-                    <th class="text-left py-2">Spannung</th>
+                   <th class="text-left py-2">Operation</th>
                     <th class="text-right py-2">Stückzahl</th>
                 </tr>
                 </thead>
