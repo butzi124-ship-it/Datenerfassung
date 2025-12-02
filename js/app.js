@@ -36,7 +36,78 @@ const CHECKLIST_ITEMS = [
 let clockInterval = null;
 let qaDialogResolve = null;          // für Scrap/Abklärung-Mitarbeiterwahl
 let pendingFinishContext = null;     // für Abschluss + Zeitdialog
-let currentOpDialogOrderId = null;   // NEU
+let currentOpDialogOrderId = null;   // OP-Dialog
+
+// NEU: Ursache-Dialog
+let qaCauseResolve = null;
+
+// NEU: 6M-Ursachen-Struktur
+const QA_CAUSE_GROUPS = [
+    {
+        id: "mensch",
+        label: "Mensch",
+        reasons: [
+            { id: "falsche_entscheidung", label: "Falsche Entscheidung" },
+            { id: "ablesefehler",         label: "Ablesefehler" },
+            { id: "falsche_korrektur",    label: "Falsche Korrektur" },
+            { id: "falsche_bedienung",    label: "Falsche Bedienung" },
+            { id: "unkonzentriert",       label: "Unkonzentriert" },
+            { id: "falsch_eingestiegen",  label: "Falsch eingestiegen" },
+            { id: "falsch_gespannt",      label: "Falsch gespannt" },
+            { id: "nicht_bekannt",        label: "Nicht bekannt" }
+        ]
+    },
+    {
+        id: "maschine",
+        label: "Maschine",
+        reasons: [
+            { id: "werkzeugbruch",    label: "Werkzeugbruch" },
+            { id: "maschinenfehler",  label: "Maschinenfehler" },
+            { id: "nicht_bekannt",    label: "Nicht bekannt" }
+        ]
+    },
+    {
+        id: "organisation",
+        label: "Organisation",
+        reasons: [
+            { id: "programm_falsch",          label: "Programm falsch" },
+            { id: "arbeitsanweisung_falsch",  label: "Falsche Arbeitsanweisung" },
+            { id: "operationsplan_falsch",    label: "Operationsplan falsch" },
+            { id: "aufspannung_nio",          label: "Aufspannung n.i.O." }
+        ]
+    },
+    {
+        id: "material",
+        label: "Material",
+        reasons: [
+            { id: "lunker",            label: "Lunker" },
+            { id: "rohmasse_nio",      label: "Rohmasse n.i.O." },
+            { id: "falsches_material", label: "Falsches Material" }
+        ]
+    },
+    {
+        id: "methode",
+        label: "Methode",
+        reasons: [
+            { id: "falsches_werkzeug",          label: "Falsches Werkzeug" },
+            { id: "kann_nicht_bearbeitet",      label: "Kann nicht bearbeitet werden" },
+            { id: "materialabmasse_ungeeignet", label: "Materialabmasse nicht geeignet" }
+        ]
+    },
+    {
+        id: "messung",
+        label: "Messung",
+        reasons: [
+            { id: "temperatur",            label: "Temperatur" },
+            { id: "messmittel_nio",        label: "Messmittel n.i.O." },
+            { id: "messtaster_nicht_kalb", label: "Messtaster nicht kalibriert" },
+            { id: "messmaschine_nio",      label: "Messmaschine n.i.O." },
+            { id: "erststueck_fehl",       label: "Erststückkontrolle fehlerhaft" }
+        ]
+    }
+];
+
+
 
 // ==========================
 //   HILFSFUNKTIONEN
@@ -605,41 +676,10 @@ function showProductionScreen(machine) {
         (o) => o.id === appState.activeOrderId
     );
 
+    // HEADER LINKS (Übersicht + Maschine + BA-Stückzahl/Diff)
     const headerNav = document.getElementById("headerNav");
     if (headerNav) {
         const baInfoHtml = buildBaInfoHtml(order);
-        const chainActive = order ? order.useChainLogic !== false : true;
-
-        const chainButtonHtml = order
-            ? `
-            <button onclick="toggleChainLogic()"
-                    class="ml-3 flex items-center justify-center w-8 h-8 rounded-full border text-xs ${
-                        chainActive
-                            ? "border-brand text-brand bg-brandLight"
-                            : "border-slate-300 text-slate-400 bg-white"
-                    }"
-                    title="Verkettungslogik ${chainActive ? "aktiv" : "deaktiviert"}">
-                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4"
-                     viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    ${
-                        chainActive
-                            // geschlossene Kette
-                            ? `
-                        <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M10 10l-3 3a4 4 0 105.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
-                      `
-                            // gebrochene Kette
-                            : `
-                        <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M10 10l-3 3a4 4 0 005.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
-                        <path d="M12 2l0 3" stroke-linecap="round"/>
-                        <path d="M12 19l0 3" stroke-linecap="round"/>
-                      `
-                    }
-                </svg>
-            </button>
-        `
-            : "";
 
         headerNav.innerHTML = `
             <button onclick="goToDashboard()"
@@ -654,10 +694,10 @@ function showProductionScreen(machine) {
                 </span>
             </div>
             ${baInfoHtml}
-            ${chainButtonHtml}
         `;
     }
 
+    // Tabs (BA ...)
     const tabs = document.getElementById("orderTabs");
     if (tabs) {
         tabs.innerHTML = "";
@@ -689,18 +729,27 @@ function showProductionScreen(machine) {
 
         renderStations(order);
         refreshTotals(order);
+        updateChainButton(order);   // <-- wichtig: Icon passend setzen
+    } else {
+        updateChainButton(null);
     }
 }
+
+
 
 function toggleChainLogic() {
     const order = appState.orders.find((o) => o.id === appState.activeOrderId);
     if (!order) return;
 
+    // true/undefined = an, false = aus
     order.useChainLogic = order.useChainLogic === false ? true : false;
 
     saveData();
-    renderView();
+    updateChainButton(order);
 }
+
+
+
 
 
 function goToDashboard() {
@@ -811,9 +860,17 @@ function renderStations(order) {
 
     if (!order || !order.stations) return;
 
+    // ID der letzten Spannung ermitteln
+    const lastStationId =
+        order.stations.length > 0
+            ? order.stations[order.stations.length - 1].id
+            : null;
+
     order.stations.forEach((s) => {
         let total = 0;
         if (s.counts) Object.values(s.counts).forEach((v) => (total += v || 0));
+
+        const isLastStation = s.id === lastStationId;
 
         const div = document.createElement("div");
         div.className =
@@ -852,48 +909,46 @@ function renderStations(order) {
             typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0;
 
         const headerTop = `
-            <div class="bg-slate-50 px-3 py-2 border-b border-slate-200 flex justify-between items-start">
-                <div class="flex flex-col gap-1">
-                    <div>${nameHtml}</div>
-                </div>
-                <div class="flex items-center gap-4">
-                    <div class="flex flex-col items-center mr-3">
-                        <span class="text-[10px] uppercase font-bold text-slate-400 tracking-wide">Spannung</span>
-                        <span class="text-2xl font-black text-brand leading-none">${total}</span>
+            <div class="bg-slate-50 px-3 py-2 border-b border-slate-200">
+                <div class="flex justify-between items-start gap-4">
+                    <div class="flex flex-col gap-1">
+                        <div>${nameHtml}</div>
                     </div>
-                    <div class="flex flex-col gap-1 min-w-[180px]">
-                        <div class="flex items-center justify-between gap-2">
-                            <span class="text-[10px] uppercase font-bold text-amber-600 tracking-wide">
-                                IN ABKLÄRUNG (${clarTotal})
-                            </span>
-                            <div class="flex items-center gap-1">
-                                <button onclick="changeClarify(${s.id}, -1)"
-                                        class="w-7 h-7 rounded-full border border-amber-400 text-amber-500 flex items-center justify-center text-lg font-bold hover:bg-amber-50">
-                                    -
-                                </button>
-                                <button onclick="changeClarify(${s.id}, 1)"
-                                        class="w-7 h-7 rounded-full border border-amber-400 text-amber-500 flex items-center justify-center text-lg font-bold hover:bg-amber-50">
-                                    +
-                                </button>
+                    <div class="flex items-center gap-4">
+                        <div class="flex flex-col gap-1 min-w-[180px]">
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-[10px] uppercase font-bold text-amber-600 tracking-wide">
+                                    IN ABKLÄRUNG (${clarTotal})
+                                </span>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="changeClarify(${s.id}, -1)"
+                                            class="w-7 h-7 rounded-full border border-amber-400 text-amber-500 flex items-center justify-center text-lg font-bold hover:bg-amber-50">
+                                        -
+                                    </button>
+                                    <button onclick="changeClarify(${s.id}, 1)"
+                                            class="w-7 h-7 rounded-full border border-amber-400 text-amber-500 flex items-center justify-center text-lg font-bold hover:bg-amber-50">
+                                        +
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="flex items-center justify-between gap-2">
+                                <span class="text-[10px] uppercase font-bold text-red-600 tracking-wide">
+                                    AUSSCHUSS (${scrapTotal})
+                                </span>
+                                <div class="flex items-center gap-1">
+                                    <button onclick="changeScrap(${s.id}, -1)"
+                                            class="w-7 h-7 rounded-full border border-red-400 text-red-500 flex items-center justify-center text-lg font-bold hover:bg-red-50">
+                                        -
+                                    </button>
+                                    <button onclick="changeScrap(${s.id}, 1)"
+                                            class="w-7 h-7 rounded-full border border-red-400 text-red-500 flex items-center justify-center text-lg font-bold hover:bg-red-50">
+                                        +
+                                    </button>
+                                </div>
                             </div>
                         </div>
-                        <div class="flex items-center justify-between gap-2">
-                            <span class="text-[10px] uppercase font-bold text-red-600 tracking-wide">
-                                AUSSCHUSS (${scrapTotal})
-                            </span>
-                            <div class="flex items-center gap-1">
-                                <button onclick="changeScrap(${s.id}, -1)"
-                                        class="w-7 h-7 rounded-full border border-red-400 text-red-500 flex items-center justify-center text-lg font-bold hover:bg-red-50">
-                                    -
-                                </button>
-                                <button onclick="changeScrap(${s.id}, 1)"
-                                        class="w-7 h-7 rounded-full border border-red-400 text-red-500 flex items-center justify-center text-lg font-bold hover:bg-red-50">
-                                    +
-                                </button>
-                            </div>
-                        </div>
+                        ${deleteHtml}
                     </div>
-                    ${deleteHtml}
                 </div>
             </div>
         `;
@@ -901,14 +956,24 @@ function renderStations(order) {
         let rows = `<div class="p-2 space-y-2 bg-white">`;
 
         if (order.employees && order.employees.length > 0) {
-            order.employees.forEach((e) => {
+            order.employees.forEach((e, idx) => {
                 const c = (s.counts && s.counts[e.id]) || 0;
+
+                // Kette nur in der LETZTEN Spannung und nur in der ERSTEN Mitarbeiter-Zeile
+                const showChain = isLastStation && idx === 0;
+
                 rows += `
                     <div class="flex justify-between items-center bg-white rounded border border-slate-200 p-2">
                         <div class="min-w-0 flex-1">
                             <div class="font-bold text-sm text-slate-700">${e.name}</div>
                         </div>
                         <div class="flex items-center gap-2">
+                            ${showChain ? `
+                            <button id="chainToggleButton"
+                                    onclick="toggleChainLogic()"
+                                    class="flex items-center justify-center w-9 h-9 rounded-full border text-xs">
+                            </button>
+                            ` : ""}
                             <button onclick="changeCount(${s.id}, '${e.id}', -1)"
                                     class="w-9 h-9 bg-slate-100 border border-slate-300 rounded hover:border-red-400 hover:text-red-500 font-bold">
                                 -
@@ -935,7 +1000,12 @@ function renderStations(order) {
         div.innerHTML = headerTop + rows;
         grid.appendChild(div);
     });
+
+    // Nach dem Aufbau der Stationen den Ketten-Button passend einfärben
+    updateChainButton(order);
 }
+
+
 
 function canDeleteStation(order, stationId) {
     if (!order || !order.stations) return false;
@@ -981,33 +1051,43 @@ function removeStation(stationId) {
     refreshTotals(order);
 }
 
-// Hilfsfunktion: benutzt für die Limits auf Basis "Stückzahl zu fertigen"
+// Hilfsfunktion: Limits für Zielmenge / Verkettung
+// -> arbeitet jetzt BA-weit (aktuelle Zähler + Historie + Lifetime-Scrap/Abklärung)
+
 function getTotalsForLimits(order) {
     const target = Number(order.targetQuantity) || 0;
     const perStation = {};
     let globalUsed = 0;
 
-    if (!order || !order.stations) {
-        return { target, globalUsed: 0, perStation };
+    if (!order || !Array.isArray(order.stations)) {
+        return { target, globalUsed, perStation };
     }
 
+    // Gutteile über alle Tage (aktuelle Zähler + Historie)
+    const perStationGoodAll = computePerStationGood(order);
+
     order.stations.forEach((s) => {
-        let good = 0;
-        if (s.counts) {
-            Object.values(s.counts).forEach((v) => {
-                good += Number(v) || 0;
-            });
-        }
-        const scrap = Number(s.scrapTotal) || 0;
-        const clarify = Number(s.clarifyTotal) || 0;
+        const good = perStationGoodAll[s.id] || 0;
+
+        const scrap =
+            typeof s.scrapLifetime === "number"
+                ? s.scrapLifetime
+                : (typeof s.scrapTotal === "number" ? s.scrapTotal : 0);
+
+        const clarify =
+            typeof s.clarifyLifetime === "number"
+                ? s.clarifyLifetime
+                : (typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0);
 
         const used = good + scrap + clarify;
+
         perStation[s.id] = { good, scrap, clarify, used };
         globalUsed += used;
     });
 
     return { target, globalUsed, perStation };
 }
+
 
 // Liefert pro Spannung die Gesamtzahl der Gutteile (aktuelle Zähler + Historie)
 function computePerStationGood(order) {
@@ -1056,41 +1136,46 @@ function changeCount(stationId, empId, delta) {
     if (!station.counts) station.counts = {};
     const oldVal = Number(station.counts[empId]) || 0;
 
-    if (delta < 0 && oldVal <= 0) {
-        return;
-    }
+    // unter 0 nicht zulassen
+    if (delta < 0 && oldVal <= 0) return;
 
+    // Limits ermitteln
     const { target, globalUsed, perStation } = getTotalsForLimits(order);
+
+    // Gutteile je Spannung BA-weit (aktuelle Zähler + Historie)
     const perStationGood = computePerStationGood(order);
-    const info = perStation[stationId] || { used: 0 };
-    const currentGood = perStationGood[stationId] || 0;
-    const idx = order.stations.findIndex((s) => s.id === stationId);
-    const inc = delta > 0 ? delta : 0;
-    const deltaUsed = delta;
+    const currentGood    = perStationGood[stationId] || 0;
+
+    const idx      = order.stations.findIndex((s) => s.id === stationId);
+    const inc      = delta > 0 ? delta : 0;
     const useChain = order.useChainLogic !== false;
 
-    // 1) PLUS
+    // -----------------------------
+    // 1) PLUS – Verkettung + Ziel
+    // -----------------------------
     if (inc > 0) {
-        // a) Kettenlogik (nur wenn aktiv)
+        // Verkettung: nur Gutteile, tagesübergreifend
         if (useChain && idx > 0) {
             const prevStation = order.stations[idx - 1];
-            const prevGood = perStationGood[prevStation.id] || 0;
+            const prevGood    = perStationGood[prevStation.id] || 0;
 
-            if (info.used + inc > prevGood) {
+            if (currentGood + inc > prevGood) {
                 alert(
-                    `In Spannung ${stationId} können nicht mehr Teile erfasst werden, ` +
-                    `als in Spannung ${prevStation.id} gut gemeldet wurden.`
+                    `In Spannung ${stationId} können nicht mehr Gutteile erfasst werden,\n` +
+                    `als in Spannung ${prevStation.id} insgesamt gut gemeldet wurden (tagesübergreifend).`
                 );
                 return;
             }
         }
 
-        // b) Ziel-Stückzahl (immer)
+        // Ziel-Stückzahl: Gut + Ausschuss + Abklärung BA-weit
         if (target > 0) {
+            const info = perStation[stationId] || { used: 0 };
+
             if (info.used + inc > target) {
                 alert(
-                    "In dieser Spannung können nicht mehr Teile erfasst werden " +
-                    "als die zu fertigende Stückzahl."
+                    "In dieser Spannung können nicht mehr Teile (Gut/Ausschuss/Abklärung) " +
+                    "erfasst werden als die zu fertigende Stückzahl."
                 );
                 return;
             }
@@ -1104,37 +1189,44 @@ function changeCount(stationId, empId, delta) {
         }
     }
 
-    // 2) MINUS – nur Kettenlogik prüfen, falls aktiv
-    if (deltaUsed < 0 && useChain) {
-        const newGood = currentGood + delta; // delta ist negativ
+    // ---------------------------------------
+    // 2) MINUS – Kettenschutz (nur Gutteile)
+    // ---------------------------------------
+    if (delta < 0 && useChain) {
+        const newGood = currentGood + delta; // delta < 0
 
+        // nur prüfen, wenn es nachfolgende Spannungen gibt
         if (idx < order.stations.length - 1) {
-            let maxUsedAfter = 0;
+            let maxAfterGood = 0;
+
             for (let i = idx + 1; i < order.stations.length; i++) {
-                const sid = order.stations[i].id;
-                const inf = perStation[sid] || { used: 0 };
-                if (inf.used > maxUsedAfter) maxUsedAfter = inf.used;
+                const sid    = order.stations[i].id;
+                const gAfter = perStationGood[sid] || 0;
+                if (gAfter > maxAfterGood) maxAfterGood = gAfter;
             }
 
-            if (newGood < maxUsedAfter) {
+            if (newGood < maxAfterGood) {
                 alert(
-                    `In Spannung ${stationId} können aktuell keine Teile abgezogen werden, ` +
-                    `weil nachfolgende Spannungen bereits mehr Teile erfasst haben.`
+                    `In Spannung ${stationId} können aktuell keine Gutteile abgezogen werden,\n` +
+                    `weil nachfolgende Spannungen bereits mehr Gutteile erfasst haben (tagesübergreifend).`
                 );
                 return;
             }
         }
     }
 
+    // -----------------------------
+    // 3) Wert setzen & UI aktual.
+    // -----------------------------
     let newVal = oldVal + delta;
     if (newVal < 0) newVal = 0;
     station.counts[empId] = newVal;
 
     saveData(false);
-
     renderStations(order);
     updateHeaderAndFooter(order);
 }
+
 
 
 
@@ -1184,6 +1276,128 @@ function getOrCreateQaDialog() {
     return dlg;
 }
 
+// ==========================
+//   URSACHEN-DIALOG (6M, 2-stufig)
+// ==========================
+
+function getOrCreateCauseDialog() {
+    let dlg = document.getElementById("qaCauseDialog");
+    if (dlg) return dlg;
+
+    dlg = document.createElement("div");
+    dlg.id = "qaCauseDialog";
+    dlg.className =
+        "fixed inset-0 bg-black/40 z-[999] hidden items-center justify-center";
+
+    dlg.innerHTML = `
+        <div class="bg-white rounded-xl shadow-soft max-w-sm w-full p-6 mx-3">
+            <h3 id="qaCauseTitle" class="text-lg font-black text-slate-800 mb-4">
+                Ursache auswählen
+            </h3>
+            <div id="qaCauseBody" class="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-4"></div>
+            <div class="flex justify-between items-center">
+                <button id="qaCauseBack"
+                        class="px-3 py-2 text-xs font-bold text-slate-400 hover:text-slate-600 hidden">
+                    ← Zurück
+                </button>
+                <button id="qaCauseCancel"
+                        class="ml-auto px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                    Abbrechen
+                </button>
+            </div>
+        </div>
+    `;
+
+    document.body.appendChild(dlg);
+    return dlg;
+}
+
+
+// ==========================
+//   URSACHEN-DIALOG (6M, 2-stufig)
+// ==========================
+
+function pickCauseForQA(mode) {
+    return new Promise((resolve) => {
+        const dlg       = getOrCreateCauseDialog();
+        const titleEl   = dlg.querySelector("#qaCauseTitle");
+        const bodyEl    = dlg.querySelector("#qaCauseBody");
+        const btnCancel = dlg.querySelector("#qaCauseCancel");
+        const btnBack   = dlg.querySelector("#qaCauseBack");
+
+        const modeLabel = mode === "scrap" ? "Ausschuss" : "Abklärung";
+
+        function close(result) {
+            dlg.classList.add("hidden");
+            dlg.classList.remove("flex");
+            qaCauseResolve = null;
+            resolve(result);
+        }
+
+        // 1. Schritt: 6M-Kategorie wählen
+        function showCategoryStep() {
+            titleEl.textContent = `Ursache für ${modeLabel} wählen`;
+            btnBack.classList.add("hidden");
+
+            bodyEl.innerHTML = "";
+            QA_CAUSE_GROUPS.forEach((grp) => {
+                const btn = document.createElement("button");
+                btn.className =
+                    "w-full text-left px-3 py-2 rounded border border-slate-200 " +
+                    "hover:bg-brandLight text-sm font-bold";
+                // nur eine fette Zeile
+                btn.innerHTML = `<span>${grp.label}</span>`;
+                btn.onclick = () => showReasonStep(grp);
+                bodyEl.appendChild(btn);
+            });
+        }
+
+        // 2. Schritt: konkreten Fehler innerhalb der Kategorie wählen
+        function showReasonStep(group) {
+            titleEl.textContent = `${group.label} – Fehler auswählen`;
+            btnBack.classList.remove("hidden");
+
+            bodyEl.innerHTML = "";
+            group.reasons.forEach((r) => {
+                const btn = document.createElement("button");
+                btn.className =
+                    "w-full text-left px-3 py-2 rounded border border-slate-200 " +
+                    "hover:bg-brandLight text-sm";
+                // ebenfalls nur eine fette Zeile
+                btn.innerHTML = `<span class="font-bold">${r.label}</span>`;
+                btn.onclick = () => {
+                    close({
+                        categoryId:       group.id,
+                        categoryLabel:    group.label,
+                        reasonId:         r.id,
+                        reasonLabel:      r.label
+                    });
+                };
+                bodyEl.appendChild(btn);
+            });
+
+            btnBack.onclick = () => {
+                showCategoryStep();
+            };
+        }
+
+        btnCancel.onclick = () => {
+            close(null);
+        };
+
+        // Start mit Kategorie-Auswahl
+        qaCauseResolve = resolve;
+        showCategoryStep();
+        dlg.classList.remove("hidden");
+        dlg.classList.add("flex");
+    });
+}
+
+
+
+
+
+
 function pickEmployeeForQA(order, stationId, mode) {
     return new Promise((resolve) => {
         const empList = order.employees || [];
@@ -1232,6 +1446,12 @@ function pickEmployeeForQA(order, stationId, mode) {
 }
 
 
+
+
+
+
+
+
 // ==========================
 //   AUSSCHUSS
 // ==========================
@@ -1241,89 +1461,89 @@ async function changeScrap(stationId, delta) {
     const station = order.stations.find((s) => s.id === stationId);
     if (!station) return;
 
-    const emp = await pickEmployeeForQA(order, stationId, "scrap");
-    if (!emp) return;
-
+    // Grundstrukturen
     if (!station.scrap) station.scrap = {};
-    if (!station.scrapLog) station.scrapLog = [];
+    if (!Array.isArray(station.scrapLog)) station.scrapLog = [];
     if (typeof station.scrapTotal !== "number") station.scrapTotal = 0;
     if (typeof station.scrapLifetime !== "number") {
         station.scrapLifetime = station.scrapTotal || 0;
     }
 
-    const oldEmpVal = station.scrap[emp.id] || 0;
-    const oldTotal = station.scrapTotal || 0;
-    const oldLifetime = station.scrapLifetime || 0;
+    // 1) Mitarbeiter wählen (immer zuerst!)
+    const emp = await pickEmployeeForQA(order, stationId, "scrap");
+    if (!emp) return;
 
-    if (delta < 0 && (oldEmpVal <= 0 || oldTotal <= 0 || oldLifetime <= 0)) {
-        alert("Negativer Ausschuss nicht möglich.");
-        return;
+    // 2) Ursache nur bei + erfassen
+    let causeInfo = null;
+    if (delta > 0 && typeof pickCauseForQA === "function") {
+        try {
+            const picked = await pickCauseForQA("scrap");
+            if (!picked) return; // Benutzer hat abgebrochen
+            causeInfo = picked;
+        } catch (e) {
+            console.warn("Fehler im Ursachen-Dialog (Ausschuss):", e);
+        }
     }
 
-    const { target, globalUsed, perStation } = getTotalsForLimits(order);
-    const perStationGood = computePerStationGood(order);
-    const info = perStation[stationId] || { used: 0 };
-    const idx = order.stations.findIndex((s) => s.id === stationId);
-    const inc = delta > 0 ? delta : 0;
-    const useChain = order.useChainLogic !== false;
+    // 3) Limits prüfen
+    try {
+        const { target, globalUsed, perStation } = getTotalsForLimits(order);
+        const info = perStation[stationId] || { used: 0 };
+        const inc = delta > 0 ? delta : 0;
 
-    // PLUS
-    if (inc > 0) {
-        if (useChain && idx > 0) {
-            const prevStation = order.stations[idx - 1];
-            const prevGood = perStationGood[prevStation.id] || 0;
-
-            if (info.used + inc > prevGood) {
-                alert(
-                    `In Spannung ${stationId} können nicht mehr Teile (inkl. Ausschuss) erfasst werden, ` +
-                    `als in Spannung ${prevStation.id} gut gemeldet wurden.`
-                );
-                return;
-            }
-        }
-
-        if (target > 0) {
+        if (inc > 0 && target > 0) {
             if (info.used + inc > target) {
                 alert(
-                    "In dieser Spannung können nicht mehr Teile (inkl. Ausschuss) erfasst werden " +
-                    "als die zu fertigende Stückzahl."
+                    "In dieser Spannung können nicht mehr Teile (inkl. Ausschuss) erfasst werden als die zu fertigende Stückzahl."
                 );
                 return;
             }
             if (globalUsed + inc > target) {
                 alert(
-                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden " +
-                    "als die zu fertigende Stückzahl."
+                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden als zu fertigende Stückzahl."
                 );
                 return;
             }
         }
+    } catch (e) {
+        console.warn("Limit-Prüfung Ausschuss fehlgeschlagen, zähle trotzdem:", e);
     }
 
-    const newEmpVal = oldEmpVal + delta;
-    const newTotal = oldTotal + delta;
-    const newLifetime = oldLifetime + delta;
-
-    if (newEmpVal < 0 || newTotal < 0 || newLifetime < 0) {
+    // 4) Werte anpassen
+    const newTotal = (station.scrapTotal || 0) + delta;
+    if (newTotal < 0) {
         alert("Negativer Ausschuss nicht möglich.");
+        return;
+    }
+
+    const newEmpVal = (station.scrap[emp.id] || 0) + delta;
+    if (newEmpVal < 0) {
+        alert("Negativer Ausschuss pro Mitarbeiter nicht möglich.");
         return;
     }
 
     station.scrap[emp.id] = newEmpVal;
     station.scrapTotal = newTotal;
+
+    // Lifetime-Logik: Gesamt-Ausschuss über die Zeit
+    let newLifetime = (station.scrapLifetime || 0) + delta;
+    if (newLifetime < 0) newLifetime = 0;
     station.scrapLifetime = newLifetime;
 
     station.scrapLog.push({
         empId: emp.id,
         delta,
-        timestamp: new Date().toISOString()
+        timestamp: new Date().toISOString(),
+        causeCategory: causeInfo ? causeInfo.categoryId : null,
+        causeCategoryLabel: causeInfo ? causeInfo.categoryLabel : null,
+        causeReason: causeInfo ? causeInfo.reasonId : null,
+        causeReasonLabel: causeInfo ? causeInfo.reasonLabel : null
     });
 
     saveData(false);
     renderStations(order);
     updateHeaderAndFooter(order);
 }
-
 
 
 
@@ -1339,53 +1559,53 @@ async function changeClarify(stationId, delta) {
     if (!station) return;
 
     if (!station.clarify) station.clarify = {};
-    if (!station.clarifyLog) station.clarifyLog = [];
+    if (!Array.isArray(station.clarifyLog)) station.clarifyLog = [];
     if (typeof station.clarifyTotal !== "number") station.clarifyTotal = 0;
     if (typeof station.clarifyLifetime !== "number") {
         station.clarifyLifetime = station.clarifyTotal || 0;
     }
 
+    // 1) Mitarbeiter wählen (immer zuerst!)
     const emp = await pickEmployeeForQA(order, stationId, "clarify");
     if (!emp) return;
 
-    const { target, globalUsed, perStation } = getTotalsForLimits(order);
-    const info = perStation[stationId] || { used: 0 };
-    const inc = delta > 0 ? delta : 0;
-    const idx = order.stations.findIndex((s) => s.id === stationId);
-    const useChain = order.useChainLogic !== false;
-
-    if (inc > 0) {
-        if (useChain && idx > 0) {
-            const prevStation = order.stations[idx - 1];
-            const prevInfo = perStation[prevStation.id] || { used: 0 };
-
-            if (info.used + inc > prevInfo.used) {
-                alert(
-                    `In Spannung ${stationId} können nicht mehr Teile (inkl. Abklärung) erfasst werden, ` +
-                    `als in Spannung ${prevStation.id} bearbeitet wurden.`
-                );
-                return;
-            }
+    // 2) Ursache nur bei + erfassen
+    let causeInfo = null;
+    if (delta > 0 && typeof pickCauseForQA === "function") {
+        try {
+            const picked = await pickCauseForQA("clarify");
+            if (!picked) return;
+            causeInfo = picked;
+        } catch (e) {
+            console.warn("Fehler im Ursachen-Dialog (Abklärung):", e);
         }
+    }
 
-        if (target > 0) {
+    // 3) Limits prüfen
+    try {
+        const { target, globalUsed, perStation } = getTotalsForLimits(order);
+        const info = perStation[stationId] || { used: 0 };
+        const inc = delta > 0 ? delta : 0;
+
+        if (inc > 0 && target > 0) {
             if (info.used + inc > target) {
                 alert(
-                    "In dieser Spannung können nicht mehr Teile (inkl. Abklärung) erfasst werden " +
-                    "als die zu fertigende Stückzahl."
+                    "In dieser Spannung können nicht mehr Teile (inkl. Abklärung) erfasst werden als die zu fertigende Stückzahl."
                 );
                 return;
             }
             if (globalUsed + inc > target) {
                 alert(
-                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden " +
-                    "als die zu fertigende Stückzahl."
+                    "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) erfasst werden als zu fertigende Stückzahl."
                 );
                 return;
             }
         }
+    } catch (e) {
+        console.warn("Limit-Prüfung Abklärung fehlgeschlagen, zähle trotzdem:", e);
     }
 
+    // 4) Logik wie bisher + Lifetime
     if (delta > 0) {
         if (
             !confirm(
@@ -1397,12 +1617,16 @@ async function changeClarify(stationId, delta) {
 
         station.clarify[emp.id] = (station.clarify[emp.id] || 0) + 1;
         station.clarifyTotal += 1;
-        station.clarifyLifetime = (station.clarifyLifetime || 0) + 1;
+        station.clarifyLifetime += 1;
 
         station.clarifyLog.push({
             empId: emp.id,
             delta: +1,
-            timestamp: new Date().toISOString()
+            timestamp: new Date().toISOString(),
+            causeCategory: causeInfo ? causeInfo.categoryId : null,
+            causeCategoryLabel: causeInfo ? causeInfo.categoryLabel : null,
+            causeReason: causeInfo ? causeInfo.reasonId : null,
+            causeReasonLabel: causeInfo ? causeInfo.reasonLabel : null
         });
     } else if (delta < 0) {
         if (station.clarify[emp.id] > 0) {
@@ -1416,15 +1640,18 @@ async function changeClarify(stationId, delta) {
 
             station.clarify[emp.id] -= 1;
             station.clarifyTotal -= 1;
-            station.clarifyLifetime = Math.max(
-                0,
-                (station.clarifyLifetime || 0) - 1
-            );
+            if (station.clarifyLifetime > 0) {
+                station.clarifyLifetime -= 1;
+            }
 
             station.clarifyLog.push({
                 empId: emp.id,
                 delta: -1,
-                timestamp: new Date().toISOString()
+                timestamp: new Date().toISOString(),
+                causeCategory: null,
+                causeCategoryLabel: null,
+                causeReason: null,
+                causeReasonLabel: null
             });
 
             if (!station.counts) station.counts = {};
@@ -1446,15 +1673,175 @@ async function changeClarify(stationId, delta) {
 
 
 
-// Summe ALLER Ausschuss-Teile im Auftrag (über alle Spannungen, über alle Tage)
+
+// ==========================
+//   FOOTER-ZÄHLER
+// ==========================
+
+// Summe aller Ausschuss-Teile im Auftrag (über alle Spannungen)
 function computeTotalScrap(order) {
     if (!order || !Array.isArray(order.stations)) return 0;
 
     return order.stations.reduce((sum, s) => {
-        const scrap = typeof s.scrapLifetime === "number" ? s.scrapLifetime : 0;
+        const scrap = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
         return sum + scrap;
     }, 0);
 }
+
+function renderFooterTotals(order, grandTotalValue) {
+    const container = document.getElementById("footerCounters");
+    if (!container) return;
+
+    if (!order || !order.stations) {
+        container.innerHTML = "";
+        return;
+    }
+
+    const historyByStation = {};
+    if (order.history && Array.isArray(order.history)) {
+        order.history.forEach((h) => {
+            const sid = h.stationId;
+            if (!historyByStation[sid]) historyByStation[sid] = {};
+            if (!historyByStation[sid][h.empId])
+                historyByStation[sid][h.empId] = 0;
+            historyByStation[sid][h.empId] += h.count || 0;
+        });
+    }
+
+    const perStationTotals = order.stations.map((s) => {
+        let sum = 0;
+
+        // aktuelle Gutteile
+        if (s.counts) {
+            Object.values(s.counts).forEach((v) => (sum += v || 0));
+        }
+
+        // Historie je Spannung + Mitarbeiter
+        if (historyByStation[s.id]) {
+            Object.values(historyByStation[s.id]).forEach(
+                (v) => (sum += v || 0)
+            );
+        }
+
+        const scrap = typeof s.scrapTotal === "number" ? s.scrapTotal : 0;
+        const clarify =
+            typeof s.clarifyTotal === "number" ? s.clarifyTotal : 0;
+
+        return { id: s.id, total: sum, scrap, clarify };
+    });
+
+    let html = '<div class="flex items-end gap-6">';
+
+    perStationTotals.forEach((sTot) => {
+        html += `
+            <div class="flex flex-col items-center">
+                <span class="text-[11px] uppercase font-bold text-slate-400 tracking-wide">SP_${sTot.id}</span>
+                <div class="flex items-baseline gap-2">
+                    <span class="text-3xl font-bold text-slate-700 leading-none">${sTot.total}</span>
+                    <div class="flex items-baseline gap-1 text-xs font-bold">
+                        <span class="text-amber-500 leading-none">${sTot.clarify}</span>
+                        <span class="text-red-600 leading-none">${sTot.scrap}</span>
+                    </div>
+                </div>
+            </div>
+        `;
+    });
+
+    html += `
+        <div class="flex flex-col items-end pl-4 border-l border-slate-200">
+            <span class="text-[11px] uppercase font-bold text-slate-500 tracking-wide">Gesamt</span>
+            <span class="text-4xl font-black text-brand leading-none">
+                ${(grandTotalValue || 0).toLocaleString("de-DE")}
+            </span>
+        </div>
+    `;
+
+    html += "</div>";
+    container.innerHTML = html;
+}
+
+// =====================================
+//  Restzähler oben rechts (OFFEN)
+//  – berücksichtigt Gutteile + Ausschuss
+// =====================================
+
+function refreshTotals(order) {
+    const grandEl = document.getElementById("grandTotal");
+
+    if (!order) {
+        if (grandEl) grandEl.textContent = "0";
+        renderFooterTotals(null, 0);
+        return;
+    }
+
+    // 1) Letzte Spannung ermitteln
+    let lastStation = null;
+    if (Array.isArray(order.stations) && order.stations.length > 0) {
+        lastStation = order.stations[order.stations.length - 1];
+    }
+
+    let goodTotal = 0;   // fertige Gutteile (nur letzte Spannung)
+    let scrapTotal = 0;  // Ausschuss (nur letzte Spannung)
+
+    if (lastStation) {
+        const lastId = lastStation.id;
+
+        // a) aktuelle Counts der letzten Spannung
+        if (lastStation.counts) {
+            Object.values(lastStation.counts).forEach((v) => {
+                goodTotal += v || 0;
+            });
+        }
+
+        // b) Historie für die letzte Spannung
+        if (Array.isArray(order.history)) {
+            order.history.forEach((h) => {
+                if (h.stationId === lastId) {
+                    goodTotal += h.count || 0;
+                }
+            });
+        }
+
+        // c) Ausschuss nur aus der letzten Spannung
+        if (typeof lastStation.scrapTotal === "number") {
+            scrapTotal = lastStation.scrapTotal;
+        }
+    }
+
+    // 2) Zielmenge bestimmen: targetQuantity > baQuantity > 0
+    const targetRaw = order.targetQuantity || order.baQuantity || 0;
+    const target = Number(targetRaw) || 0;
+
+    // Bearbeitete Teile = Gutteile + Ausschuss (nur letzte Spannung)
+    const processed = goodTotal + scrapTotal;
+
+    // 3) Wert für den Header (OFFEN / Rest)
+    let headerVal;
+    if (target > 0) {
+        const remaining = target - processed;
+        headerVal = remaining > 0 ? remaining : 0;
+    } else {
+        // kein Ziel hinterlegt -> zeig bearbeitete Menge
+        headerVal = processed;
+    }
+
+    if (grandEl) {
+        grandEl.textContent = headerVal.toLocaleString("de-DE");
+    }
+
+    // 4) Footer-Gesamt:
+    //    weiter NUR fertige Gutteile (ebenfalls letzte Spannung)
+    renderFooterTotals(order, goodTotal);
+}
+
+// Zentrale Hilfsfunktion: immer diese verwenden!
+function updateHeaderAndFooter(order) {
+    if (!order) {
+        order = appState.orders.find((o) => o.id === appState.activeOrderId) || null;
+    }
+    refreshTotals(order);
+}
+
 
 
 function renderFooterTotals(order, grandTotalValue) {
@@ -1545,60 +1932,52 @@ function renderFooterTotals(order, grandTotalValue) {
 function refreshTotals(order) {
     const grandEl = document.getElementById("grandTotal");
 
-    // Kein Auftrag -> alles auf 0
     if (!order) {
         if (grandEl) grandEl.textContent = "0";
         renderFooterTotals(null, 0);
+        updateChainButton(null);
         return;
     }
 
-    // ======================================
-    // 1) Letzte Spannung ermitteln
-    // ======================================
+    // 1) Letzte Spannung
     let lastStation = null;
     if (Array.isArray(order.stations) && order.stations.length > 0) {
         lastStation = order.stations[order.stations.length - 1];
     }
 
-    let goodTotal = 0; // fertige Gutteile (nur letzte Spannung)
+    let goodTotal = 0;
+    let scrapTotal = 0;
 
     if (lastStation) {
         const lastId = lastStation.id;
 
-        // a) aktuelle Counts der letzten Spannung
         if (lastStation.counts) {
             Object.values(lastStation.counts).forEach((v) => {
-                goodTotal += Number(v) || 0;
+                goodTotal += v || 0;
             });
         }
 
-        // b) Historie für die letzte Spannung
         if (Array.isArray(order.history)) {
             order.history.forEach((h) => {
                 if (h.stationId === lastId) {
-                    goodTotal += Number(h.count) || 0;
+                    goodTotal += h.count || 0;
                 }
             });
         }
+
+        if (typeof lastStation.scrapTotal === "number") {
+            scrapTotal = lastStation.scrapTotal;
+        }
     }
 
-    // ======================================
-    // 2) Zielmenge bestimmen
-    // ======================================
+    // 2) Zielmenge
     const targetRaw = order.targetQuantity || order.baQuantity || 0;
     const target = Number(targetRaw) || 0;
 
-    // ======================================
-    // 3) Bearbeitete Teile:
-    //    - GUTTEILE nur aus der letzten Spannung (inkl. Historie)
-    //    - AUSSCHUSS aus ALLEN Spannungen, über alle Tage (scrapLifetime)
-    // ======================================
-    const scrapAll = computeTotalScrap(order);  // nutzt jetzt scrapLifetime
-    const processed = goodTotal + scrapAll;
+    // Bearbeitete Teile = Gut + Ausschuss der letzten Spannung
+    const processed = goodTotal + scrapTotal;
 
-    // ======================================
-    // 4) Wert für den Header (OFFEN / Rest)
-    // ======================================
+    // 3) Header-Wert
     let headerVal;
     if (target > 0) {
         const remaining = target - processed;
@@ -1611,12 +1990,52 @@ function refreshTotals(order) {
         grandEl.textContent = headerVal.toLocaleString("de-DE");
     }
 
-    // ======================================
-    // 5) Footer-Gesamt:
-    //     weiterhin NUR fertige Gutteile (letzte Spannung)
-    // ======================================
+    // 4) Footer-Gesamt = nur Gutteile letzte Spannung
     renderFooterTotals(order, goodTotal);
+
+    // 5) Ketten-Button aktualisieren
+    updateChainButton(order);
 }
+
+
+function updateChainButton(order) {
+    const btn = document.getElementById("chainToggleButton");
+    if (!btn) return;
+
+    // Standard: Logik AN, außer wenn explizit false gespeichert wurde
+    const active = order ? order.useChainLogic !== false : true;
+
+    btn.title = active
+        ? "Verkettungslogik aktiv"
+        : "Verkettungslogik deaktiviert";
+
+    btn.className =
+        "flex items-center justify-center w-9 h-9 rounded-full border text-xs " +
+        (active
+            // Logik AN: Pastellgrün
+            ? "border-emerald-500 text-emerald-700 bg-emerald-100"
+            // Logik AUS: Pastellrot
+            : "border-red-400 text-red-600 bg-red-100");
+
+    btn.innerHTML = active
+        // geschlossene Kette
+        ? `
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 10l-3 3a4 4 0 105.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>`
+        // gebrochene Kette
+        : `
+        <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4"
+             viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M10 10l-3 3a4 4 0 005.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M12 2v3" stroke-linecap="round"/>
+            <path d="M12 19v3" stroke-linecap="round"/>
+        </svg>`;
+}
+
 
 
 
@@ -1691,11 +2110,43 @@ function openNewOrderDialog(machineId) {
     const sel = document.getElementById("selectInitialEmployee");
     if (sel) {
         sel.innerHTML = '<option value="">--Wählen--</option>';
-        appState.globalEmployees.forEach((e) => {
+
+        // Abteilung bestimmen:
+        // 1) Wenn Maschine bekannt -> deren Abteilung
+        // 2) sonst Abteilung des aktuellen Users (falls vorhanden)
+        let deptIdForOrder = null;
+
+        if (machineId) {
+            const mach = appState.machines.find((m) => m.id === machineId);
+            if (mach && mach.deptId) {
+                deptIdForOrder = mach.deptId;
+            }
+        }
+
+        if (!deptIdForOrder && appState.currentUser && appState.currentUser.deptId) {
+            deptIdForOrder = appState.currentUser.deptId;
+        }
+
+        const candidates = appState.globalEmployees.filter((e) => {
+            if (deptIdForOrder) {
+                return e.deptId === deptIdForOrder;
+            }
+            // Fallback: wenn keine Abteilung ermittelbar -> alle anzeigen
+            return true;
+        });
+
+        candidates.forEach((e) => {
             sel.innerHTML += `<option value="${e.id}">${e.name}</option>`;
         });
-        if (appState.currentUser && appState.currentUser.role !== "admin") {
-            sel.value = appState.currentUser.id;
+
+        // Aktuellen Mitarbeiter vorbelegen (nur wenn er in der Liste ist)
+        if (appState.currentUser && appState.currentUser.role === "worker") {
+            const existsInList = candidates.some(
+                (e) => e.id === appState.currentUser.id
+            );
+            if (existsInList) {
+                sel.value = appState.currentUser.id;
+            }
         }
     }
 
@@ -1723,6 +2174,7 @@ function openNewOrderDialog(machineId) {
 
     safeHide("newOrderDialog", false);
 }
+
 
 function setStationCount(count) {
     const input = document.getElementById("inputStationCount");
