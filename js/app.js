@@ -86,10 +86,15 @@ function loadData() {
             if (!Array.isArray(m.activeOrderIds)) m.activeOrderIds = [];
         });
 
-                appState.orders.forEach((o) => {
+        appState.orders.forEach((o) => {
             if (!Array.isArray(o.stations)) o.stations = [];
             if (!Array.isArray(o.employees)) o.employees = [];
             if (!Array.isArray(o.history)) o.history = [];
+
+            // NEU: Standardmäßig Kettenlogik aktiv
+            if (typeof o.useChainLogic === "undefined") {
+                o.useChainLogic = true;
+            }
 
             o.stations.forEach((s) => {
                 if (!s.counts) s.counts = {};
@@ -100,21 +105,22 @@ function loadData() {
                 if (typeof s.scrapTotal !== "number") s.scrapTotal = 0;
                 if (typeof s.clarifyTotal !== "number") s.clarifyTotal = 0;
 
-                // NEU: Lebensdauer-Ausschuss (für OFFEN-Berechnung)
+                // Lebensdauer-Ausschuss / Abklärung
                 if (typeof s.scrapLifetime !== "number") {
-                    // vorhandenen Ausschuss als Basis übernehmen
                     s.scrapLifetime = s.scrapTotal || 0;
+                }
+                if (typeof s.clarifyLifetime !== "number") {
+                    s.clarifyLifetime = s.clarifyTotal || 0;
                 }
 
                 // Vorgabezeit-Infos pro Spannung
                 if (!s.timeStatus) s.timeStatus = null;              // "ok" | "changed" | null
                 if (typeof s.actualTimeMinutes !== "number") s.actualTimeMinutes = null;
-                
-                // NEU: OP-Nummer
+
+                // OP-Nummer
                 if (typeof s.opNumber === "undefined") s.opNumber = null;
             });
         });
-
 
         const allowedViews = ["login", "dashboard", "production"];
         if (!allowedViews.includes(appState.currentView)) {
@@ -124,6 +130,7 @@ function loadData() {
         console.warn("Laden fehlgeschlagen:", e);
     }
 }
+
 
 function startClock() {
     if (clockInterval) clearInterval(clockInterval);
@@ -594,15 +601,45 @@ function showProductionScreen(machine) {
     safeHide("productionFooter", false);
     safeHide("totalDisplay", false);
 
-    // Aktiven Auftrag zur Maschine holen
     const order = appState.orders.find(
         (o) => o.id === appState.activeOrderId
     );
 
-    // HEADER LINKS (Übersicht + Maschine + BA-Stückzahl/Differenz)
     const headerNav = document.getElementById("headerNav");
     if (headerNav) {
-        const baInfoHtml = buildBaInfoHtml(order); // nutzt BA-Stückzahl & Differenz
+        const baInfoHtml = buildBaInfoHtml(order);
+        const chainActive = order ? order.useChainLogic !== false : true;
+
+        const chainButtonHtml = order
+            ? `
+            <button onclick="toggleChainLogic()"
+                    class="ml-3 flex items-center justify-center w-8 h-8 rounded-full border text-xs ${
+                        chainActive
+                            ? "border-brand text-brand bg-brandLight"
+                            : "border-slate-300 text-slate-400 bg-white"
+                    }"
+                    title="Verkettungslogik ${chainActive ? "aktiv" : "deaktiviert"}">
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4"
+                     viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    ${
+                        chainActive
+                            // geschlossene Kette
+                            ? `
+                        <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M10 10l-3 3a4 4 0 105.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
+                      `
+                            // gebrochene Kette
+                            : `
+                        <path d="M7 7l3-3a4 4 0 015.7 5.7L14 12" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M10 10l-3 3a4 4 0 005.7 5.7L14 18" stroke-linecap="round" stroke-linejoin="round"/>
+                        <path d="M12 2l0 3" stroke-linecap="round"/>
+                        <path d="M12 19l0 3" stroke-linecap="round"/>
+                      `
+                    }
+                </svg>
+            </button>
+        `
+            : "";
 
         headerNav.innerHTML = `
             <button onclick="goToDashboard()"
@@ -617,10 +654,10 @@ function showProductionScreen(machine) {
                 </span>
             </div>
             ${baInfoHtml}
+            ${chainButtonHtml}
         `;
     }
 
-    // TABS (BA 123456 oben im Produktionskopf)
     const tabs = document.getElementById("orderTabs");
     if (tabs) {
         tabs.innerHTML = "";
@@ -644,7 +681,6 @@ function showProductionScreen(machine) {
         });
     }
 
-    // DETAILINFOS (BA / Artikel in der Box unter den Tabs)
     if (order) {
         const dBA = document.getElementById("displayBA");
         const dArt = document.getElementById("displayArt");
@@ -653,9 +689,19 @@ function showProductionScreen(machine) {
 
         renderStations(order);
         refreshTotals(order);
-
     }
 }
+
+function toggleChainLogic() {
+    const order = appState.orders.find((o) => o.id === appState.activeOrderId);
+    if (!order) return;
+
+    order.useChainLogic = order.useChainLogic === false ? true : false;
+
+    saveData();
+    renderView();
+}
+
 
 function goToDashboard() {
     appState.currentView = "dashboard";
@@ -1010,27 +1056,23 @@ function changeCount(stationId, empId, delta) {
     if (!station.counts) station.counts = {};
     const oldVal = Number(station.counts[empId]) || 0;
 
-    // Wenn nichts da ist und wir - drücken, einfach ignorieren
     if (delta < 0 && oldVal <= 0) {
         return;
     }
 
-    // --------- Limits & Ketten-Logik ---------
     const { target, globalUsed, perStation } = getTotalsForLimits(order);
     const perStationGood = computePerStationGood(order);
-
     const info = perStation[stationId] || { used: 0 };
     const currentGood = perStationGood[stationId] || 0;
     const idx = order.stations.findIndex((s) => s.id === stationId);
+    const inc = delta > 0 ? delta : 0;
+    const deltaUsed = delta;
+    const useChain = order.useChainLogic !== false;
 
-    const inc = delta > 0 ? delta : 0;      // für Plus-Fälle
-    const deltaUsed = delta;                // used & good folgen hier dem delta
-
-    // 1) PLUS: nach vorne gekoppelt
+    // 1) PLUS
     if (inc > 0) {
-        // a) Verkettung: diese Spannung darf insgesamt (Gut + Ausschuss + Abklärung)
-        //    nicht mehr Teile haben als die VORIGE Spannung GUT hat.
-        if (idx > 0) {
+        // a) Kettenlogik (nur wenn aktiv)
+        if (useChain && idx > 0) {
             const prevStation = order.stations[idx - 1];
             const prevGood = perStationGood[prevStation.id] || 0;
 
@@ -1043,9 +1085,8 @@ function changeCount(stationId, empId, delta) {
             }
         }
 
-        // b) Stückzahl-Limit (zu fertigende Menge insgesamt)
+        // b) Ziel-Stückzahl (immer)
         if (target > 0) {
-            // pro Spannung
             if (info.used + inc > target) {
                 alert(
                     "In dieser Spannung können nicht mehr Teile erfasst werden " +
@@ -1053,7 +1094,6 @@ function changeCount(stationId, empId, delta) {
                 );
                 return;
             }
-            // gesamt (alle Spannungen dieses Tages)
             if (globalUsed + inc > target) {
                 alert(
                     "Es dürfen insgesamt nicht mehr Teile (Gut/Ausschuss/Abklärung) " +
@@ -1064,13 +1104,11 @@ function changeCount(stationId, empId, delta) {
         }
     }
 
-    // 2) MINUS: nach hinten gekoppelt
-    if (deltaUsed < 0) {
-        // neue Gutmenge in dieser Spannung
+    // 2) MINUS – nur Kettenlogik prüfen, falls aktiv
+    if (deltaUsed < 0 && useChain) {
         const newGood = currentGood + delta; // delta ist negativ
 
         if (idx < order.stations.length - 1) {
-            // höchste Nutzung in NACHFOLGENDEN Spannungen
             let maxUsedAfter = 0;
             for (let i = idx + 1; i < order.stations.length; i++) {
                 const sid = order.stations[i].id;
@@ -1078,8 +1116,6 @@ function changeCount(stationId, empId, delta) {
                 if (inf.used > maxUsedAfter) maxUsedAfter = inf.used;
             }
 
-            // Nachfolgende Spannungen dürfen nicht mehr Teile haben als
-            // diese Spannung GUT hat
             if (newGood < maxUsedAfter) {
                 alert(
                     `In Spannung ${stationId} können aktuell keine Teile abgezogen werden, ` +
@@ -1089,7 +1125,6 @@ function changeCount(stationId, empId, delta) {
             }
         }
     }
-    // --------- Ende Limit- & Ketten-Logik ---------
 
     let newVal = oldVal + delta;
     if (newVal < 0) newVal = 0;
@@ -1100,6 +1135,7 @@ function changeCount(stationId, empId, delta) {
     renderStations(order);
     updateHeaderAndFooter(order);
 }
+
 
 
 
@@ -1219,25 +1255,21 @@ async function changeScrap(stationId, delta) {
     const oldTotal = station.scrapTotal || 0;
     const oldLifetime = station.scrapLifetime || 0;
 
-    // Bei Versuch, mehr abzuziehen als vorhanden
     if (delta < 0 && (oldEmpVal <= 0 || oldTotal <= 0 || oldLifetime <= 0)) {
         alert("Negativer Ausschuss nicht möglich.");
         return;
     }
 
-    // --------- Limits & Ketten-Logik ---------
     const { target, globalUsed, perStation } = getTotalsForLimits(order);
     const perStationGood = computePerStationGood(order);
-
     const info = perStation[stationId] || { used: 0 };
     const idx = order.stations.findIndex((s) => s.id === stationId);
-    const inc = delta > 0 ? delta : 0;      // für Plus-Fälle
+    const inc = delta > 0 ? delta : 0;
+    const useChain = order.useChainLogic !== false;
 
-    // 1) PLUS: nach vorne gekoppelt (inkl. Ausschuss)
+    // PLUS
     if (inc > 0) {
-        // a) Verkettung: diese Spannung (Gut + Ausschuss + Abklärung)
-        //    darf nicht mehr Teile haben als die VORIGE Spannung GUT hat.
-        if (idx > 0) {
+        if (useChain && idx > 0) {
             const prevStation = order.stations[idx - 1];
             const prevGood = perStationGood[prevStation.id] || 0;
 
@@ -1250,7 +1282,6 @@ async function changeScrap(stationId, delta) {
             }
         }
 
-        // b) Tages-Stückzahl-Limit
         if (target > 0) {
             if (info.used + inc > target) {
                 alert(
@@ -1268,9 +1299,6 @@ async function changeScrap(stationId, delta) {
             }
         }
     }
-    // MINUS: hier keine Ketten-Prüfung nötig – wir korrigieren nur Ausschuss.
-
-    // --------- Ende Limit- & Ketten-Logik ---------
 
     const newEmpVal = oldEmpVal + delta;
     const newTotal = oldTotal + delta;
@@ -1282,8 +1310,8 @@ async function changeScrap(stationId, delta) {
     }
 
     station.scrap[emp.id] = newEmpVal;
-    station.scrapTotal = newTotal;       // Tageswert
-    station.scrapLifetime = newLifetime; // Auftragswert
+    station.scrapTotal = newTotal;
+    station.scrapLifetime = newLifetime;
 
     station.scrapLog.push({
         empId: emp.id,
@@ -1293,8 +1321,9 @@ async function changeScrap(stationId, delta) {
 
     saveData(false);
     renderStations(order);
-    updateHeaderAndFooter(order); // OFFEN nutzt scrapLifetime
+    updateHeaderAndFooter(order);
 }
+
 
 
 
@@ -1319,15 +1348,14 @@ async function changeClarify(stationId, delta) {
     const emp = await pickEmployeeForQA(order, stationId, "clarify");
     if (!emp) return;
 
-    // --------- Limits & Ketten-Logik (nur für +) ---------
     const { target, globalUsed, perStation } = getTotalsForLimits(order);
     const info = perStation[stationId] || { used: 0 };
-    const inc = delta > 0 ? delta : 0; // bei Abklärung ++ erhöht sich used
+    const inc = delta > 0 ? delta : 0;
     const idx = order.stations.findIndex((s) => s.id === stationId);
+    const useChain = order.useChainLogic !== false;
 
     if (inc > 0) {
-        // Verkettung nach vorne
-        if (idx > 0) {
+        if (useChain && idx > 0) {
             const prevStation = order.stations[idx - 1];
             const prevInfo = perStation[prevStation.id] || { used: 0 };
 
@@ -1357,7 +1385,6 @@ async function changeClarify(stationId, delta) {
             }
         }
     }
-    // --------- Ende Ketten-Logik ---------
 
     if (delta > 0) {
         if (
@@ -1414,6 +1441,7 @@ async function changeClarify(stationId, delta) {
     renderStations(order);
     updateHeaderAndFooter(order);
 }
+
 
 
 
@@ -1726,7 +1754,6 @@ function closeNewOrderDialog() {
 
 function submitNewOrder() {
     try {
-        // sichere DOM-Element-Zugriffe (kann null sein)
         const mInputEl = document.getElementById("inputMachineId");
         const baEl = document.getElementById("inputBA");
         const artEl = document.getElementById("inputArt");
@@ -1741,24 +1768,20 @@ function submitNewOrder() {
         const baQty = baQtyEl ? parseInt(baQtyEl.value.trim(), 10) || 0 : 0;
         const targetQty = targetQtyEl ? parseInt(targetQtyEl.value.trim(), 10) || 0 : 0;
 
-        // station count kann als hidden input oder als data-count kommen
         let cnt = 6;
         if (stationCountEl && stationCountEl.value) {
             cnt = parseInt(stationCountEl.value, 10) || 6;
         } else {
-            // fallback: suche aktive button in stationCountButtons
             const btnActive = document.querySelector("#stationCountButtons button.bg-brand");
             if (btnActive && btnActive.dataset && btnActive.dataset.count) {
                 cnt = parseInt(btnActive.dataset.count, 10) || 6;
             }
         }
 
-        // Mitarbeiter: tolerant aus select, falls nur text vorhanden -> suche passenden Mitarbeiter nach Namen
         let empId = "";
         if (selEmpEl) {
             empId = selEmpEl.value || "";
             if (!empId) {
-                // evtl. ist das select so gebaut dass value leer ist aber Text gesetzt -> versuchen anhand Text zu matchen
                 const selText = selEmpEl.options[selEmpEl.selectedIndex]
                     ? selEmpEl.options[selEmpEl.selectedIndex].text
                     : "";
@@ -1769,7 +1792,6 @@ function submitNewOrder() {
             }
         }
 
-        // Minimal-Validierung
         if (!mId) {
             alert("Bitte Maschine angeben.");
             return;
@@ -1791,7 +1813,6 @@ function submitNewOrder() {
             return;
         }
         if (!empId) {
-            // wenn currentUser ein Mitarbeiter ist, nutzen wir ihn als Fallback
             if (appState.currentUser && appState.currentUser.role === "worker") {
                 empId = appState.currentUser.id;
             } else {
@@ -1800,7 +1821,6 @@ function submitNewOrder() {
             }
         }
 
-        // Maschine anlegen, falls neu
         let machine = appState.machines.find((m) => m.id === mId);
         if (!machine) {
             machine = {
@@ -1813,30 +1833,27 @@ function submitNewOrder() {
             if (!Array.isArray(machine.activeOrderIds)) machine.activeOrderIds = [];
         }
 
-        // Stations-Array erstellen (1..cnt)
         const stations = [];
         const countStations = isNaN(cnt) || cnt <= 0 ? 6 : cnt;
         for (let i = 1; i <= countStations; i++) {
             stations.push({
-                     id: i,
-                     name: `Spannung ${i}`,
-                       counts: {},
-                       scrap: {},
-                       scrapTotal: 0,
-                       scrapLifetime: 0,      // NEU
-                       scrapLog: [],
-                       clarify: {},
-                       clarifyTotal: 0,
-                       clarifyLifetime: 0,    // NEU
-                       clarifyLog: [],
-                       timeStatus: null,
-                       actualTimeMinutes: null,
-                       opNumber: null
-});
-
+                id: i,
+                name: `Spannung ${i}`,
+                counts: {},
+                scrap: {},
+                scrapTotal: 0,
+                scrapLifetime: 0,
+                scrapLog: [],
+                clarify: {},
+                clarifyTotal: 0,
+                clarifyLifetime: 0,
+                clarifyLog: [],
+                timeStatus: null,
+                actualTimeMinutes: null,
+                opNumber: null
+            });
         }
 
-        // initialer Mitarbeiter (global)
         const gEmp = appState.globalEmployees.find((e) => e.id === empId) || null;
 
         const order = {
@@ -1860,10 +1877,10 @@ function submitNewOrder() {
             history: [],
             finishChecklist: {
                 items: []
-            }
+            },
+            useChainLogic: true // NEU: Kettenlogik standardmäßig aktiv
         };
 
-        // Push in State
         appState.orders.push(order);
         machine.activeOrderIds.push(order.id);
 
@@ -1875,7 +1892,6 @@ function submitNewOrder() {
         closeNewOrderDialog();
         renderView();
 
-        // Falls openOpDialog existiert, öffnen (wenn nicht, kein Fehler)
         if (typeof openOpDialog === "function") {
             try {
                 openOpDialog(order);
@@ -1888,6 +1904,7 @@ function submitNewOrder() {
         alert("Fehler beim Starten des Auftrags. Konsole prüfen.");
     }
 }
+
 
 
 function openOpDialog(order) {
