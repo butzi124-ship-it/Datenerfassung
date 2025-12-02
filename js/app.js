@@ -1232,7 +1232,6 @@ function changeCount(stationId, empId, delta) {
 
 
 
-
 // ==========================
 //   QA-Mitarbeiter-Dialog
 // ==========================
