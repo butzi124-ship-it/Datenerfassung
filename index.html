@@ -1,0 +1,673 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Datenerfassung Pro</title>
+
+    <!-- Theme-Farbe fürs Tablet -->
+    <meta name="theme-color" content="#005baa" />
+
+    <!-- (Optional) Manifest für PWA -->
+    <link rel="manifest" href="manifest.json" />
+
+    <!-- Tailwind per CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        brand: "#005baa",
+                        brandDark: "#003a7a",
+                        brandLight: "#e5f1fb",
+                        scrap: "#e02424",
+                        clarify: "#e0a800"
+                    }
+                }
+            }
+        };
+    </script>
+
+    <!-- jsPDF für PDF-Export -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <!-- Eigenes CSS -->
+    <link rel="stylesheet" href="css/app.css" />
+</head>
+<body class="text-slate-800 h-screen flex flex-col overflow-hidden">
+
+<!-- Speicher-Toast -->
+<div id="saveToast"
+     class="fixed top-5 left-1/2 -translate-x-1/2 bg-brand text-white px-6 py-3 rounded-full shadow-xl z-50 hidden toast font-bold border-2 border-white tracking-wide">
+    GESPEICHERT
+</div>
+
+<!-- LOGIN-VIEW -->
+<div id="loginView"
+     class="fixed inset-0 z-[100] bg-slate-100 flex flex-col items-center justify-center p-4">
+    <div
+        class="bg-white p-8 rounded-xl shadow-soft max-w-md w-full border border-slate-200 text-center relative overflow-hidden">
+        <div class="absolute -right-16 -top-16 w-40 h-40 rounded-full bg-brandLight opacity-40 pointer-events-none"></div>
+
+        <div class="mb-6 flex justify-center relative z-10">
+            <img src="images/humbel.png"
+                 class="h-16 object-contain"
+                 alt="Humbel Logo"
+                 onerror="this.src='https://www.humbel-gears.com/uploads/content/Logos/hum_logo_rgb_n_t.png'">
+        </div>
+
+        <h2 class="text-2xl font-black text-slate-800 mb-6 uppercase tracking-wide">Anmeldung</h2>
+
+        <button onclick="openAdminLogin()"
+                class="w-full bg-brand text-white py-4 rounded-lg font-bold shadow-md hover:bg-brandDark mb-6 flex justify-center items-center gap-2 btn-press">
+            ADMIN / ABT.LEITER
+        </button>
+
+        <!-- Abteilungen -->
+        <div class="text-left mb-2 text-xs font-bold text-slate-500 uppercase tracking-wide">
+            Abteilung wählen
+        </div>
+        <div id="loginDeptList" class="flex flex-wrap gap-2 mb-4"></div>
+
+        <div class="relative flex py-2 items-center mb-2">
+            <div class="flex-grow border-t border-slate-200"></div>
+            <span class="flex-shrink-0 mx-4 text-slate-400 text-xs font-bold">Mitarbeiter</span>
+            <div class="flex-grow border-t border-slate-200"></div>
+        </div>
+
+        <div id="loginEmployeeList"
+             class="space-y-2 max-h-60 overflow-y-auto text-left scrollbar-thin"></div>
+
+        <p id="loginInfoText" class="mt-4 text-[11px] text-slate-400">
+            Mitarbeiter werden im Menü <span class="font-bold">Stammdaten</span> vom Admin angelegt.
+        </p>
+    </div>
+</div>
+
+<!-- HEADER -->
+<header class="bg-white shadow-sm z-20 border-b-4 border-brand flex-none h-20 relative">
+    <div class="max-w-7xl mx-auto px-4 h-full flex justify-between items-center">
+        <div class="flex items-center gap-4 overflow-hidden flex-grow">
+            <div class="flex-shrink-0 cursor-pointer" onclick="goToDashboard()">
+                <img src="images/humbel.png"
+                     class="h-10 object-contain"
+                     alt="Humbel Logo"
+                     onerror="this.src='https://www.humbel-gears.com/uploads/content/Logos/hum_logo_rgb_n_t.png'">
+            </div>
+            <div class="h-8 w-px bg-slate-300 hidden sm:block"></div>
+            <div id="headerNav" class="flex items-center gap-3 min-w-0">
+                <!-- wird dynamisch gefüllt -->
+            </div>
+        </div>
+
+        <div class="text-right flex-shrink-0 ml-4 flex items-center gap-4">
+            <div class="hidden sm:block text-right">
+    <p class="text-xs font-mono text-slate-500 font-bold" id="clock">--:--</p>
+    <div id="totalDisplay" class="hidden mt-1">
+        <p class="text-[10px] text-slate-500 uppercase tracking-wider font-bold leading-none mb-0.5">
+            OFFEN
+        </p>
+        <p class="text-2xl font-black text-brand leading-none" id="grandTotal">0</p>
+    </div>
+</div>
+</div>
+
+
+            <button onclick="logout()"
+                    class="bg-slate-100 p-2 rounded-lg hover:text-red-500 transition btn-press"
+                    title="Abmelden">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path stroke-linecap="round"
+                          stroke-linejoin="round"
+                          stroke-width="2"
+                          d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+</header>
+
+<!-- CONTENT -->
+<main class="flex-grow overflow-y-auto p-4 relative">
+    <div class="max-w-7xl mx-auto h-full">
+
+        <!-- DASHBOARD -->
+        <div id="dashboardView" class="h-full flex flex-col hidden">
+            <div class="flex justify-between items-center mb-6 flex-none flex-wrap gap-4">
+                <div>
+                    <h2 class="text-2xl font-black text-slate-800 uppercase tracking-wide">
+                        Maschinenübersicht
+                    </h2>
+                    <p class="text-sm text-slate-500 font-semibold" id="userGreeting">...</p>
+                </div>
+                <div class="flex gap-2">
+                    <div id="adminControls" class="flex gap-2 hidden">
+                        <button onclick="openBackupDialog()"
+                                class="bg-white hover:bg-slate-100 border border-slate-300 px-3 py-2 rounded font-bold shadow-sm text-sm"
+                                title="Backup">
+                            💾
+                        </button>
+                        <button onclick="openProtocol()"
+                                class="bg-white hover:bg-brandLight text-brand border border-brand px-4 py-2 rounded font-bold shadow-sm text-xs tracking-wide">
+                            PROTOKOLL
+                        </button>
+                        <button onclick="openMasterDataDialog()"
+                                class="bg-brand hover:bg-brandDark text-white border border-brand px-4 py-2 rounded font-bold shadow-md text-xs tracking-wide">
+                            STAMMDATEN
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div id="dashboardContent" class="pb-20 space-y-8"></div>
+            <div id="emptyState"
+                 class="hidden flex-grow flex-col items-center justify-center text-slate-400 pb-20">
+                <p class="font-bold text-lg">Keine Daten vorhanden</p>
+            </div>
+        </div>
+
+        <!-- PRODUCTION-VIEW -->
+        <div id="productionView" class="hidden flex flex-col h-full">
+            <div class="flex-none mb-2">
+                <div id="orderTabs"
+                     class="flex items-center gap-2 overflow-x-auto pb-2 px-1 scrollbar-thin"></div>
+            </div>
+
+            <div class="bg-white p-4 sm:p-6 rounded-xl shadow-sm border border-slate-200 mb-4 flex-none">
+                <div class="flex flex-wrap justify-between items-end gap-6">
+                    <div class="flex gap-10 items-end flex-wrap">
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wide">
+                                BA-Nummer
+                            </p>
+                            <p class="text-3xl font-black text-slate-800 leading-none" id="displayBA">--</p>
+                        </div>
+                        <div>
+                            <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wide">
+                                Artikel
+                            </p>
+                            <p class="text-3xl font-black text-slate-800 leading-none" id="displayArt">--</p>
+                        </div>
+                    </div>
+
+                    <div id="prodAdminControls" class="flex gap-3 flex-wrap">
+                        <button type="button" onclick="openAddEmployeeDialog()"
+                                class="bg-white text-brand border border-brand hover:bg-brandLight px-4 py-2 rounded font-bold text-xs tracking-wide btn-press">
+                            MITARBEITER +
+                        </button>
+
+                        <button onclick="addStationToOrder()"
+                                class="bg-white text-brand border border-brand hover:bg-brandLight px-4 py-2 rounded font-bold text-xs tracking-wide btn-press">
+                            SPANNUNG +
+                        </button>
+                        <button onclick="openNewOrderDialog(appState.activeMachineId)"
+                                class="bg-white text-brand border border-brand hover:bg-brandLight px-4 py-2 rounded font-bold text-xs tracking-wide btn-press">
+                            Neuer BA
+                        </button>
+                        <button onclick="initiateOrderFinish()"
+                                class="bg-red-600 hover:bg-red-700 text-white border border-red-600 px-5 py-2 rounded font-bold text-xs tracking-wide shadow-sm btn-press">
+                            ABSCHLIESSEN
+                        </button>
+                        <button onclick="deleteActiveOrder()"
+                                class="bg-red-600 hover:bg-red-700 text-white border border-red-600 px-5 py-2 rounded font-bold text-xs tracking-wide shadow-sm btn-press">
+                            BA Löschen
+                        </button>
+
+                    </div>
+                </div>
+            </div>
+
+            <div id="stationGrid"
+                 class="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-4 pb-24 overflow-y-auto scrollbar-thin"></div>
+        </div>
+
+    </div>
+</main>
+
+<!-- FOOTER mit Zählern + PDF-Export -->
+<footer id="productionFooter"
+        class="bg-white border-t-2 border-slate-200 p-4 flex-none hidden z-20">
+    <div class="max-w-7xl mx-auto flex gap-4 justify-between items-center">
+        <!-- Links: Tages-Reset -->
+        <button onclick="performDayReset()"
+                class="flex items-center gap-2 text-slate-600 font-bold text-sm hover:text-brand hover:bg-brandLight px-4 py-2 rounded border-2 border-slate-300 uppercase">
+            TAGES-RESET
+        </button>
+
+        <!-- Rechts: Zähler + PDF-Export -->
+        <div class="flex-1 flex items-center justify-end gap-8">
+            <div id="footerCounters" class="text-right"></div>
+
+            <button onclick="exportPdf(false)"
+                    class="bg-slate-700 hover:bg-slate-900 text-white font-bold py-2 px-5 rounded border-2 border-slate-700 flex items-center gap-2 transition uppercase text-sm">
+                EXPORT PDF
+            </button>
+        </div>
+    </div>
+</footer>
+
+<!-- Admin-Login -->
+<div id="adminLoginDialog"
+     class="fixed inset-0 bg-black/40 z-[200] hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-sm w-full p-6 mx-3">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">Admin / Abt.-Leiter</h3>
+            <button onclick="closeAdminLogin()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div class="space-y-3">
+            <div>
+                <label class="block text-xs font-bold text-slate-500 mb-1">Benutzername</label>
+                <input id="loginUser"
+                       type="text"
+                       class="w-full border rounded px-3 py-2 text-sm"
+                       placeholder="admin oder Name Leiter" />
+            </div>
+            <div>
+                <label class="block text-xs font-bold text-slate-500 mb-1">Passwort / Pers.-Nr.</label>
+                <input id="loginPass"
+                       type="password"
+                       class="w-full border rounded px-3 py-2 text-sm"
+                       placeholder="z.B. 1234" />
+            </div>
+        </div>
+
+        <div class="flex justify-end gap-2 mt-6">
+            <button onclick="closeAdminLogin()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button onclick="performAdminLogin()"
+                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
+                Anmelden
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Stammdaten -->
+<div id="masterDataDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-5xl w-full max-h-[90vh] flex flex-col mx-3">
+        <div class="flex justify-between items-center border-b px-6 py-4">
+            <h3 class="text-lg font-black text-slate-800">Stammdaten</h3>
+            <button onclick="closeMasterDataDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div class="px-6 pt-3 flex gap-2 border-b bg-slate-50">
+            <button id="tab-dept"
+                    onclick="switchMasterTab('dept')"
+                    class="px-3 py-2 text-xs font-bold rounded-t bg-white text-brand">
+                ABTEILUNGEN
+            </button>
+            <button id="tab-mach"
+                    onclick="switchMasterTab('mach')"
+                    class="px-3 py-2 text-xs font-bold rounded-t text-slate-500">
+                MASCHINEN
+            </button>
+            <button id="tab-emp"
+                    onclick="switchMasterTab('emp')"
+                    class="px-3 py-2 text-xs font-bold rounded-t text-slate-500">
+                MITARBEITER
+            </button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-6 space-y-6">
+            <!-- Abteilungen -->
+            <div id="view-dept" class="space-y-4">
+                <div class="flex gap-2 items-end flex-wrap">
+                    <div class="flex-1 min-w-[180px]">
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Bezeichnung</label>
+                        <input id="newDeptName"
+                               type="text"
+                               class="w-full border rounded px-3 py-2 text-sm"
+                               placeholder="z.B. Fräserei" />
+                    </div>
+                    <button onclick="addDepartment()"
+                            class="px-4 py-2 text-xs font-bold bg-brand text-white rounded hover:bg-brandDark">
+                        HINZUFÜGEN
+                    </button>
+                </div>
+                <div id="listDepartments" class="space-y-2"></div>
+            </div>
+
+            <!-- Maschinen -->
+            <div id="view-mach" class="space-y-4 hidden">
+                <div class="flex gap-2 items-end flex-wrap">
+                    <div class="w-32">
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Maschine</label>
+                        <input id="newMachName"
+                               type="text"
+                               class="w-full border rounded px-3 py-2 text-sm"
+                               placeholder="z.B. 50" />
+                    </div>
+                    <div class="flex-1 min-w-[160px]">
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Abteilung</label>
+                        <select id="newMachDept"
+                                class="w-full border rounded px-3 py-2 text-sm"></select>
+                    </div>
+                    <button onclick="addMachine()"
+                            class="px-4 py-2 text-xs font-bold bg-brand text-white rounded hover:bg-brandDark">
+                        HINZUFÜGEN
+                    </button>
+                </div>
+                <div id="listMachines" class="space-y-2"></div>
+            </div>
+
+            <!-- Mitarbeiter -->
+            <div id="view-emp" class="space-y-4 hidden">
+                <div class="grid grid-cols-1 sm:grid-cols-4 gap-2 items-end">
+                    <div class="sm:col-span-2">
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Name</label>
+                        <input id="newEmpName"
+                               type="text"
+                               class="w-full border rounded px-3 py-2 text-sm"
+                               placeholder="z.B. Thomas" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Personalnummer</label>
+                        <input id="newEmpId"
+                               type="text"
+                               class="w-full border rounded px-3 py-2 text-sm"
+                               placeholder="z.B. 1234" />
+                    </div>
+                    <div>
+                        <label class="block text-xs font-bold text-slate-500 mb-1">Abteilung</label>
+                        <select id="newEmpDept"
+                                class="w-full border rounded px-3 py-2 text-sm"></select>
+                    </div>
+                    <div class="flex items-center gap-2 sm:col-span-2">
+                        <input id="newEmpHead" type="checkbox" class="h-4 w-4 border rounded" />
+                        <label for="newEmpHead"
+                               class="text-xs font-bold text-slate-600 select-none">
+                            Abteilungsleiter (Admin-Login möglich)
+                        </label>
+                    </div>
+                    <div class="sm:col-span-2 text-right">
+                        <button onclick="addEmployee()"
+                                class="px-4 py-2 text-xs font-bold bg-brand text-white rounded hover:bg-brandDark">
+                            HINZUFÜGEN
+                        </button>
+                    </div>
+                </div>
+                <div id="listEmployees" class="space-y-2"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Auftrag starten -->
+<div id="newOrderDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden flex items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-lg w-full p-6 mx-3">
+        <!-- Kopf -->
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">AUFTRAG STARTEN</h3>
+            <button onclick="closeNewOrderDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <!-- Inhalt -->
+        <div class="space-y-3">
+            <!-- Maschine + Spannungen -->
+            <div class="flex gap-2 items-end">
+                <div class="flex-1">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">Maschine</label>
+                    <input id="inputMachineId"
+                           list="machineSuggestions"
+                           class="w-full border rounded px-3 py-2 text-sm"
+                           placeholder="z.B. 50" />
+                    <datalist id="machineSuggestions"></datalist>
+                </div>
+
+                <div class="w-48">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">Spannungen</label>
+
+                    <!-- verstecktes Feld für die Logik -->
+                    <input id="inputStationCount" type="hidden" value="6" />
+
+                    <!-- Buttons 1–6 -->
+                    <div id="stationCountButtons" class="grid grid-cols-6 gap-1">
+                        <button type="button" data-count="1" onclick="setStationCount(1)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            1
+                        </button>
+                        <button type="button" data-count="2" onclick="setStationCount(2)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            2
+                        </button>
+                        <button type="button" data-count="3" onclick="setStationCount(3)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            3
+                        </button>
+                        <button type="button" data-count="4" onclick="setStationCount(4)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            4
+                        </button>
+                        <button type="button" data-count="5" onclick="setStationCount(5)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            5
+                        </button>
+                        <button type="button" data-count="6" onclick="setStationCount(6)"
+                                class="px-2 py-1 text-xs font-bold border rounded bg-white text-slate-700">
+                            6
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- BA + Artikel -->
+            <div class="flex gap-2 flex-wrap">
+                <div class="flex-1 min-w-[140px]">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">BA-Nummer</label>
+                    <input id="inputBA"
+                           type="text"
+                           class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+                <div class="flex-1 min-w-[140px]">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">Artikel</label>
+                    <input id="inputArt"
+                           type="text"
+                           class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+            </div>
+
+            <!-- Stückzahlen -->
+            <div class="flex gap-2 flex-wrap">
+                <div class="flex-1 min-w-[140px]">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">Stückzahl BA</label>
+                    <input id="inputBaQty"
+                           type="number"
+                           min="1"
+                           class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+                <div class="flex-1 min-w-[140px]">
+                    <label class="block text-xs font-bold text-slate-500 mb-1">Stückzahl zu fertigen</label>
+                    <input id="inputTargetQty"
+                           type="number"
+                           min="1"
+                           class="w-full border rounded px-3 py-2 text-sm" />
+                </div>
+            </div>
+
+            <!-- Mitarbeiter -->
+            <div>
+                <label class="block text-xs font-bold text-slate-500 mb-1">Mitarbeiter</label>
+                <select id="selectInitialEmployee"
+                        class="w-full border rounded px-3 py-2 text-sm">
+                    <option value="">--Wählen--</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Footer-Buttons im Kasten -->
+        <div class="flex justify-end gap-2 mt-6">
+            <button onclick="closeNewOrderDialog()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button onclick="submitNewOrder()"
+                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
+                Starten
+            </button>
+        </div>
+    </div>
+</div>
+<!-- Operationen je Spannung -->
+<div id="opDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-md w-full p-6 mx-3">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">Operationen je Spannung</h3>
+            <button onclick="closeOpDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div id="opDialogBody" class="space-y-3 max-h-[60vh] overflow-y-auto">
+            <!-- wird per JS aufgebaut -->
+        </div>
+
+        <div class="flex justify-end gap-2 mt-4">
+            <button onclick="closeOpDialog()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button onclick="saveOpDialog()"
+                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
+                Speichern
+            </button>
+        </div>
+    </div>
+</div>
+
+
+<!-- Spannungsname ändern -->
+<div id="nameDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-sm w-full p-6 mx-3">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">Spannung umbenennen</h3>
+            <button onclick="closeNameDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+        <div>
+            <label class="block text-xs font-bold text-slate-500 mb-1">Name</label>
+            <input id="nameInput"
+                   type="text"
+                   class="w-full border rounded px-3 py-2 text-sm" />
+        </div>
+        <div class="flex justify-end gap-2 mt-6">
+            <button onclick="closeNameDialog()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button onclick="saveName()"
+                    class="px-4 py-2 text-sm font-bold bg-brand text-white rounded hover:bg-brandDark">
+                Speichern
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Backup -->
+<div id="backupDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-md w-full p-6 mx-3">
+        <div class="flex justify-between items-center mb-4">
+            <h3 class="text-lg font-black text-slate-800">Backup</h3>
+            <button onclick="safeHide('backupDialog', true)"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div class="space-y-4 text-sm">
+            <div class="flex justify-between items-center gap-2">
+                <div>
+                    <p class="font-bold text-slate-700">Backup exportieren</p>
+                    <p class="text-xs text-slate-500">
+                        Aktuellen Datenstand als JSON herunterladen.
+                    </p>
+                </div>
+                <button onclick="downloadBackup()"
+                        class="px-4 py-2 text-xs font-bold bg-brand text-white rounded hover:bg-brandDark">
+                    DOWNLOAD
+                </button>
+            </div>
+
+            <div class="border-t pt-4">
+                <p class="font-bold text-slate-700 mb-2">Backup wiederherstellen</p>
+                <input type="file"
+                       accept="application/json"
+                       onchange="restoreBackup(event)"
+                       class="block w-full text-xs text-slate-500" />
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Protokoll -->
+<div id="protocolDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-3xl w-full max-h-[90vh] flex flex-col mx-3">
+        <div class="flex justify-between items-center border-b px-6 py-4">
+            <h3 class="text-lg font-black text-slate-800">Tages-Historie</h3>
+            <button onclick="closeProtocol()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-4">
+            <table class="w-full text-xs">
+                <thead class="border-b text-slate-500">
+                <tr>
+                    <th class="text-left py-2">Datum</th>
+                    <th class="text-left py-2">BA</th>
+                    <th class="text-left py-2">Mitarbeiter</th>
+                   <th class="text-left py-2">Operation</th>
+                    <th class="text-right py-2">Stückzahl</th>
+                </tr>
+                </thead>
+                <tbody id="protocolTableBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<!-- QS-Checkliste / Abschluss -->
+<div id="checklistDialog"
+     class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center">
+    <div class="bg-white rounded-xl shadow-soft max-w-lg w-full max-h-[90vh] flex flex-col mx-3">
+        <div class="flex justify-between items-center border-b px-6 py-4">
+            <h3 class="text-lg font-black text-slate-800">Auftrag abschließen</h3>
+            <button onclick="closeChecklistDialog()"
+                    class="text-slate-400 hover:text-slate-600 font-bold text-xl">&times;</button>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-4 space-y-3" id="checklistContainer">
+            <!-- wird von initChecklist() gefüllt -->
+        </div>
+
+        <div class="border-t px-6 py-4 flex justify-end gap-2">
+            <button onclick="closeChecklistDialog()"
+                    class="px-4 py-2 text-sm font-bold text-slate-500 hover:text-slate-700">
+                Abbrechen
+            </button>
+            <button id="finishOrderBtn"
+                    onclick="completeOrderFinal()"
+                    disabled
+                    class="px-4 py-2 text-sm font-bold rounded bg-slate-300 text-white cursor-not-allowed">
+                ABSCHLIESSEN &amp; PDF
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Overlay für Ausschuss / Abklärung (wird per JS befüllt) -->
+<div id="qaOverlay" class="fixed inset-0 bg-black/40 z-40 hidden items-center justify-center"></div>
+
+<!-- APP LOGIK -->
+<script src="js/app.js"></script>
+</body>
+</html>
